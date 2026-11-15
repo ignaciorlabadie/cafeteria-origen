@@ -1,0 +1,99 @@
+# =============================================================================
+# Cafetería Origen — orquestación de contenedores
+#
+# Aplicación cliente-servidor distribuida en dos servicios:
+#   - db  : PostgreSQL 16 (datos del catálogo, pedidos, reseñas, usuarios)
+#   - app : Node.js + TypeScript + Express (API REST + sitio web)
+#
+# Ambos servicios viven en una red propia (red_origen). Dentro de esa red se
+# comunican por nombre: el contenedor `app` alcanza a la base como `db:5432`.
+#
+# Levantar:   docker compose up -d --build
+# Ver logs:    docker compose logs -f app
+# Bajar todo: docker compose down
+# Resetear:   docker compose down -v   (borra el volumen de la base)
+# =============================================================================
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: origen_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: origen
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # VULNERABILIDAD (configuración): se usa una contraseña trivial y la base
+      # de datos acepta conexiones desde cualquier origen ("trust"), sin
+      # contraseña ni cifrado. Corregir → md5/scram-sha-256 + contraseña robusta.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - datos_origen:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    networks:
+      - red_origen
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d origen"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: origen_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: origen
+      # VULNERABILIDAD (mínimos privilegios): la aplicación se conecta con el
+      # superusuario `postgres`. Corregir → usar el usuario `origen_app` que
+      # sólo tiene permisos sobre las tablas del catálogo (ver
+      # docker/initdb/02-usuario-aplicacion.sql).
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      UPLOADS_DIR: /app/uploads
+      # Puerto publicado en el host, sólo para los mensajes de arranque.
+      APP_PORT: "${APP_PORT:-8080}"
+    ports:
+      # Puerto en el host. Si en tu máquina el 8080 está ocupado, exportá
+      # APP_PORT=8090 antes de `docker compose up` (o ponelo en un .env).
+      - "${APP_PORT:-8080}:3000"
+    volumes:
+      # Montaje del código en el host: se edita con el IDE y el contenedor
+      # toma los cambios al reiniciar (docker compose restart app).
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./scripts:/app/scripts
+      # El checklist de seguridad revisa también la configuración de Docker.
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./Dockerfile:/app/Dockerfile:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./uploads:/app/uploads
+    networks:
+      - red_origen
+
+volumes:
+  datos_origen:
+
+networks:
+  red_origen:
+    name: red_origen
+    driver: bridge
+    # Subred explícita: los contenedores de esta app quedan en 10.89.0.0/24
+    # (puertos 10.89.0.x) y se comunican por nombre.
+    # Si en tu máquina esa subred ya está usada, cambiala por otra libre
+    # (por ejemplo 10.90.0.0/24) o borrá estas dos líneas para que Docker
+    # elija una automáticamente.
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.89.0.0/24
+          gateway: 10.89.0.1
