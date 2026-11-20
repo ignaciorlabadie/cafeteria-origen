@@ -1,5 +1,5 @@
 import * as db from '../db';
-import { calcularPrecio } from '../catalogo';
+import { calcularPrecio, PRECIO_POR_GRAMO } from '../catalogo';
 import type { DatosProducto, Producto, ProductoConPrecio } from '../tipos';
 
 /** Filtros del menú, tal como llegan en la query string. */
@@ -15,44 +15,52 @@ export type DatosProductoEntrada = Partial<DatosProducto> & { activo?: boolean }
 /** Id tal como llega en la URL (texto) o ya convertido. */
 type Id = number | string;
 
-/**
- * Servicio de catálogo.
- *
- * -----------------------------------------------------------------------------
- * FALLA — Inyección SQL (OWASP A03:2021)
- * -----------------------------------------------------------------------------
- * Los filtros del catálogo (tipo, variedad, búsqueda) se concatenan en el
- * texto SQL. Un valor con comillas rompe la consulta y permite modificar su
- * lógica: ampliar el conjunto de resultados, leer otras tablas mediante UNION
- * o incluso borrar datos.
- *
- * Corrección: consultas parametrizadas con $1, $2, ... y listas blancas
- * (validar que `tipo` sea uno de los valores conocidos antes de usarlo).
- * -----------------------------------------------------------------------------
- */
+const TIPOS_VALIDOS: string[] = ['espresso', 'filtrado', 'pasteleria'];
+const VARIEDADES_VALIDAS: string[] = Object.keys(PRECIO_POR_GRAMO);
 
 /** Lista productos aplicando los filtros del menú. */
 export async function listar(filtros: FiltrosCatalogo = {}): Promise<ProductoConPrecio[]> {
   const { tipo, variedad, q } = filtros;
 
-  // FALLA: concatenación directa de entrada de usuario en la consulta.
-  let sql = 'SELECT * FROM productos WHERE activo = true';
-  if (tipo) sql += ` AND tipo = '${tipo}'`;
-  if (variedad) sql += ` AND variedad = '${variedad}'`;
-  if (q) {
-    sql += ` AND (nombre ILIKE '%${q}%' OR descripcion ILIKE '%${q}%')`;
-  }
-  sql += ' ORDER BY tipo, variedad NULLS FIRST, id';
+  if (tipo && !TIPOS_VALIDOS.includes(tipo)) return [];
+  if (variedad && !VARIEDADES_VALIDAS.includes(variedad)) return [];
 
-  const { rows } = await db.query<Producto>(sql);
+  const condiciones = ['activo = true'];
+  const valores: unknown[] = [];
+
+  if (tipo) {
+    valores.push(tipo);
+    condiciones.push('tipo = $' + valores.length);
+  }
+  if (variedad) {
+    valores.push(variedad);
+    condiciones.push('variedad = $' + valores.length);
+  }
+  if (q) {
+    const patron = '%' + q.replace(/[\\%_]/g, '\\$&') + '%';
+    valores.push(patron);
+    const marcador = '$' + valores.length;
+    const escape = " ESCAPE '\\'";
+    condiciones.push(
+      '(nombre ILIKE ' + marcador + escape + ' OR descripcion ILIKE ' + marcador + escape + ')'
+    );
+  }
+
+  const sql =
+    'SELECT * FROM productos WHERE ' + condiciones.join(' AND ') +
+    ' ORDER BY tipo, variedad NULLS FIRST, id';
+
+  const { rows } = await db.query<Producto>(sql, valores);
 
   return rows.map((p) => ({ ...p, precio: calcularPrecio(p) }));
 }
 
 /** Obtiene un producto por id. */
 export async function obtener(id: Id): Promise<ProductoConPrecio | null> {
-  // FALLA: inyección SQL en el id.
-  const { rows } = await db.query<Producto>(`SELECT * FROM productos WHERE id = '${id}'`);
+  const idNumerico = Number(id);
+  if (!Number.isInteger(idNumerico) || idNumerico <= 0) return null;
+
+  const { rows } = await db.query<Producto>('SELECT * FROM productos WHERE id = $1', [idNumerico]);
   if (!rows[0]) return null;
   return { ...rows[0], precio: calcularPrecio(rows[0]) };
 }
