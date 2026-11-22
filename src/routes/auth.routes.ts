@@ -10,10 +10,10 @@ const router = express.Router();
  * FALLAS:
  *  - Inyección SQL en la verificación de credenciales (ver usuarios.service).
  *  - Contraseñas almacenadas en texto plano.
- *  - Mensajes de error que distinguen "usuario inexistente" de "contraseña
- *    incorrecta" → enumeración de usuarios.
  *  - Sin rate limiting ni bloqueo: fuerza bruta ilimitada.
  *  - El identificador de sesión no se regenera (fijación de sesión).
+ *
+ * XSS: el mensaje de error es genérico y no refleja lo que envió el cliente.
  */
 router.post('/login', async (req, res, next) => {
   try {
@@ -27,16 +27,9 @@ router.post('/login', async (req, res, next) => {
     const usuario = await usuarios.autenticar(username, password);
 
     if (!usuario) {
-      // FALLA — Enumeración de usuarios: el mensaje distingue entre
-      // "no existe" y "contraseña incorrecta", lo que permite a un atacante
-      // averiguar qué cuentas hay en el sistema.
-      const existe = await usuarios.buscarPorUsername(username);
-      if (existe) {
-        return res.status(401).json({ error: 'La contraseña es incorrecta.' });
-      }
-      return res
-        .status(401)
-        .json({ error: `El usuario "${username}" no existe en el sistema.` });
+      // Un único mensaje genérico: no refleja la entrada (XSS) ni distingue
+      // entre usuario inexistente y contraseña incorrecta (enumeración).
+      return res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
     }
 
     crearSesion(req, res, {
