@@ -5,7 +5,7 @@ const router = express.Router();
 
 /**
  * GET /api/comentarios — reseñas públicas de la cafetería.
- * El sitio las pinta con innerHTML: por eso son un vector de XSS almacenado.
+ * El sitio las pinta como texto (textContent), no como HTML.
  */
 router.get('/', async (req, res, next) => {
   try {
@@ -18,8 +18,9 @@ router.get('/', async (req, res, next) => {
 /**
  * POST /api/comentarios
  *
- * FALLAS: sin token anti-CSRF, sin validación de longitud/rango y sin
- * sanitización (XSS almacenado).
+ * CSRF: cubierto por el middleware global `verificarCsrf`.
+ *
+ * FALLAS (Práctica 4): sin validación de longitud/rango ni de contenido.
  */
 router.post('/', async (req, res, next) => {
   try {

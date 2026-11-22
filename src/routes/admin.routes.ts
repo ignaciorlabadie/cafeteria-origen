@@ -95,8 +95,7 @@ router.put('/productos/:id', async (req, res, next) => {
 /**
  * DELETE /api/admin/productos/:id
  *
- * FALLA — CSRF: la petición que borra un producto no lleva ningún token y se
- * acepta con un simple GET/POST desde cualquier origen.
+ * CSRF: cubierto por el middleware global `verificarCsrf`.
  */
 router.delete('/productos/:id', async (req, res, next) => {
   try {
@@ -113,8 +112,9 @@ router.delete('/productos/:id', async (req, res, next) => {
 /**
  * POST /api/admin/cambiar-contrasena
  *
- * FALLAS: sin token anti-CSRF, sin límite de intentos, y la contraseña nueva
- * se guarda en texto plano.
+ * CSRF: cubierto por el middleware global `verificarCsrf`.
+ *
+ * FALLAS: sin límite de intentos, y la contraseña nueva se guarda en texto plano.
  */
 router.post('/cambiar-contrasena', async (req, res, next) => {
   try {
