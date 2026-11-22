@@ -11,6 +11,7 @@
   var API = '/api';
   var usuario = null;
   var productosCache = {};
+  var csrfToken = '';
 
   function $(sel) { return document.querySelector(sel); }
   function $$(sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); }
@@ -63,10 +64,29 @@
     return Number(valor || 0).toLocaleString('es-AR', { style: 'currency', currency: 'ARS' });
   }
 
+  function cargarCsrf() {
+    return fetch(API + '/csrf-token', { credentials: 'same-origin' })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        csrfToken = data.token || data.csrfToken || '';
+        return csrfToken;
+      })
+      .catch(function () { return ''; });
+  }
+
   function api(url, opciones) {
-    return fetch(API + url, opciones).then(function (res) {
-      return res.json().catch(function () { return {}; }).then(function (data) {
-        return { ok: res.ok, status: res.status, data: data };
+    var opts = opciones || {};
+    var metodo = (opts.method || 'GET').toUpperCase();
+    var esEscritura = ['POST', 'PUT', 'PATCH', 'DELETE'].indexOf(metodo) !== -1;
+    var listo = !esEscritura || csrfToken ? Promise.resolve() : cargarCsrf();
+
+    return listo.then(function () {
+      var headers = Object.assign({}, opts.headers || {});
+      if (esEscritura && csrfToken) headers['X-CSRF-Token'] = csrfToken;
+      return fetch(API + url, Object.assign({}, opts, { headers: headers })).then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          return { ok: res.ok, status: res.status, data: data };
+        });
       });
     });
   }
@@ -115,7 +135,10 @@
         return;
       }
       usuario = resp.data.usuario;
-      mostrarPanel();
+      // El login creó una sesión nueva con su propio token: lo refrescamos
+      // antes de habilitar el panel para que las próximas escrituras usen el
+      // token correcto.
+      cargarCsrf().then(mostrarPanel);
     });
   }
 
