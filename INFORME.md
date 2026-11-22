@@ -121,3 +121,101 @@
   ```
 
 - **Cómo se verifica:** recrear la base con `docker compose down -v && docker compose up -d` para que se creen el rol `origen_app` y sus permisos, y correr `npm run test:seguridad` → `✔ la aplicación NO se conecta con un superusuario de la base` (el test consulta `current_user` y `rolsuper` en la BD).
+
+## VUL-05 · Cross-Site Scripting reflejado
+
+- **Qué es y por qué importa:** la entrada del usuario volvía al navegador dentro de una respuesta o de un mensaje de error y se pintaba como HTML. Un atacante podía ejecutar JavaScript en la sesión de otra persona: robar la cookie, suplantarla o cambiar lo que ve.
+- **Dónde está (versión original):**
+  - `src/public/js/app.js:130`: `el.innerHTML = 'Resultados para <strong>' + filtros.q + '</strong> ...'` (texto del buscador).
+  - `src/public/js/app.js:137,233,288`: mensajes de error pintados con `innerHTML`.
+  - `src/public/js/admin.js:63,79`: `feedback()` usaba `innerHTML` con el error del servidor.
+  - `src/routes/auth.routes.ts:39`, `src/routes/productos.routes.ts:58`, `src/middleware/errores.ts:18`: mensajes de error que devolvían el usuario, el id o la URL recibidos.
+- **Cómo se observa:** en el buscador del menú, `<img src=x onerror=alert('XSS')>`; en el login, `<img src=x onerror=alert(1)>` como usuario; en el panel, `No pudimos iniciar sesión: ...` con un usuario que contenía HTML.
+- **Por qué ocurre:** `innerHTML` interpreta la cadena como marcado, y el servidor reflejaba la entrada en el JSON de error. No había separación entre datos y código, ni una CSP que frenara los scripts.
+- **Cómo se corrige:** los errores del servidor son genéricos (`'Usuario o contraseña incorrectos.'`, `'No existe ese producto.'`, `'Ruta no encontrada.'`). En el cliente, todo se inserta como texto:
+
+  ```js
+  function elemento(etiqueta, clase, texto) {
+    var el = document.createElement(etiqueta);
+    if (clase) el.className = clase;
+    if (texto !== undefined) el.textContent = String(texto == null ? '' : texto);
+    return el;
+  }
+
+  el.appendChild(document.createTextNode('Resultados para '));
+  el.appendChild(elemento('strong', '', filtros.q));
+  ```
+
+  Ya no queda ninguna asignación a `.innerHTML` en `src/public/js/`.
+- **Cómo se verifica:** `npm run test:seguridad` → bloque *Cross-Site Scripting* 3/3 en verde; `npm run check:security` → `✔ XSS-01`, `✔ XSS-02`. Además, con el login `<img src=x onerror=alert(1)>` la respuesta JSON no contiene `<img`.
+
+## VUL-06 · Cross-Site Scripting almacenado en las reseñas
+
+- **Qué es y por qué importa:** el texto de una reseña se guardaba en la base y se ejecutaba en el navegador de **todos** los visitantes que abrieran el sitio, mucho después de que el atacante se fuera.
+- **Dónde está:** `src/public/js/app.js:257-271` (versión original): `cont.innerHTML = resp.data.comentarios.map(...)` con `raw(c.autor)` y `raw(c.texto)`, donde `raw()` devolvía el valor sin escapar.
+- **Cómo se observa:** publicar una reseña con `<script>alert('XSS almacenado')</script>` y recargar la página: el alert salta solo, también en otro navegador.
+- **Por qué ocurre:** los datos de la base se trataban como HTML de confianza; `raw()` no escapaba nada y `innerHTML` ejecutaba el `<script>` al insertarlo.
+- **Cómo se corrige:** la reseña se arma con `createElement` / `textContent`:
+
+  ```js
+  var reseña = elemento('article', 'review');
+  var head = elemento('div', 'review-head');
+  head.appendChild(elemento('span', 'review-author', c.autor));
+  head.appendChild(elemento('span', 'review-stars', estrellas));
+  reseña.appendChild(head);
+  reseña.appendChild(elemento('p', 'review-text', c.texto));
+  cont.appendChild(reseña);
+  ```
+
+  El límite de longitud del texto en el servidor (XSS-04) queda para la práctica de validación de entrada.
+- **Cómo se verifica:** `npm run check:security` → `✔ XSS-01` (ningún `innerHTML` en `src/public/js`); recargar el sitio con una reseña que contenga HTML: se muestra como texto, sin alerts.
+
+## VUL-07 · Cross-Site Scripting de DOM en el panel
+
+- **Qué es y por qué importa:** un parámetro de la URL se inyectaba directamente en el DOM del panel de administración. Alguien podía enviarle al administrador un link con un payload y ejecutar código con su sesión.
+- **Dónde está:** `src/public/js/admin.js:421-428` (versión original): `var objetivo = params.get('vista'); $('#panel-bienvenida').innerHTML = 'Panel ' + objetivo;`.
+- **Cómo se observa:** abrir `http://localhost:8080/admin.html?vista=<img src=x onerror=alert('DOM')>`.
+- **Por qué ocurre:** `URLSearchParams` devuelve texto sin sanear, pero se asignaba a `innerHTML`, que lo interpreta como HTML.
+- **Cómo se corrige:** asignar el valor con `textContent`:
+
+  ```js
+  $('#panel-bienvenida').textContent = 'Panel ' + objetivo;
+  ```
+
+  También se reescribieron las tablas del panel (pedidos, productos, reportes, usuarios), los KPIs y los mensajes de `feedback()` con `createElement` / `textContent`, porque allí también se pintaban datos de la API con `innerHTML`.
+- **Cómo se verifica:** `admin.html?vista=<img src=x onerror=alert('DOM')>` muestra el texto literal sin ejecutarlo; `npm run test:seguridad` → bloque *Cross-Site Scripting* en verde.
+
+## VUL-23 (parcial) · Content Security Policy
+
+- **Qué es y por qué importa:** es una segunda línea de defensa: aunque algún dato se pinte como HTML por error, el navegador no ejecuta scripts inline ni `eval`.
+- **Dónde está (versión original):** `src/app.ts` no configuraba `helmet` ni `contentSecurityPolicy`.
+- **Cómo se corrige:** en `src/app.ts`:
+
+  ```ts
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+          defaultSrc: ["'self'"],
+          baseUri: ["'self'"],
+          objectSrc: ["'none'"],
+          frameAncestors: ["'none'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", 'data:'],
+          // La demo corre por HTTP en localhost: no forzar HTTPS aquí.
+          upgradeInsecureRequests: null,
+        },
+      },
+    })
+  );
+  ```
+
+  Los HTML sólo cargan scripts externos (`/js/app.js`, `/js/admin.js`), así que `script-src 'self'` no rompe el sitio. Otros controles de configuración (secretos, diagnóstico, stack traces) siguen pendientes para la práctica 6.
+- **Cómo se verifica:** `npm run check:security` → `✔ XSS-03` y `✔ CFG-01`; `npm run test:seguridad` → `✔ el sitio envía cabeceras de seguridad`; `curl -I http://localhost:8080/` muestra `Content-Security-Policy` y `X-Content-Type-Options`.
+
+## Reflexión de la práctica 2
+
+El cambio de fondo fue dejar de tratar el texto como HTML. La corrección no es "limpiar" el payload del usuario — siempre aparece una variante que se escapa — sino elegir el destino correcto: `textContent` cuando se muestra texto, `setAttribute` cuando se setea un atributo, y `createElement` cuando se arma estructura. La validación en servidor y la CSP son capas adicionales, no reemplazos de ese hábito. En un proyecto real, además, habría que usar un framework que escape por defecto y prohibir `innerHTML` con una regla de lint, para que la falla no vuelva a aparecer en el próximo cambio.
+
