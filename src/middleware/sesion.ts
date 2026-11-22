@@ -7,9 +7,9 @@
  * 1. El identificador de sesión es un contador incremental (`sesion_1`,
  *    `sesion_2`, ...): es PREDECIBLE y adivinable. Un atacante puede recorrer
  *    los valores y usurpar la sesión de otro usuario (fijación de sesión).
- * 2. La cookie se emite SIN `httpOnly` (JavaScript puede leerla), SIN `secure`
- *    (viaja en texto plano por HTTP) y SIN `sameSite` (el navegador la manda
- *    también en peticiones desde otros sitios → facilita CSRF).
+ * 2. La cookie se emite SIN `httpOnly` (JavaScript puede leerla) y SIN `secure`
+ *    (viaja en texto plano por HTTP). `sameSite: 'lax'` ya está configurado
+ *    como defensa contra CSRF (ver middleware/csrf.ts).
  * 3. Las sesiones NO expiran nunca.
  * 4. Al iniciar sesión no se regenera el identificador.
  * 5. El cierre de sesión sólo borra la cookie del cliente: la sesión sigue
@@ -22,6 +22,7 @@
  * -----------------------------------------------------------------------------
  */
 
+import { randomBytes } from 'crypto';
 import type { Request, Response } from 'express';
 
 import type { Sesion, UsuarioSesion } from '../tipos';
@@ -51,15 +52,22 @@ export function crearSesion(req: Request, res: Response, usuario: UsuarioSesion)
   // FALLA: identificador predecible.
   const id = `sesion_${contadorSesiones}`;
 
-  // FALLA: la sesión nunca expira.
+  // Token anti-CSRF aleatorio y distinto para cada sesión. Se guarda en el
+  // servidor y se manda en una cookie legible por JavaScript (doble envío).
+  const csrfToken = randomBytes(32).toString('hex');
+
+  // FALLA (Práctica 5): la sesión nunca expira.
   sesiones.set(id, {
     usuario,
     creadaEn: Date.now(),
     expiraEn: null,
+    csrfToken,
   });
 
-  // FALLA: cookie sin httpOnly / secure / sameSite.
-  res.cookie('sid', id, { path: '/' });
+  // FALLA (Práctica 5): cookie sin httpOnly / secure.
+  // SameSite ya mitiga CSRF: el navegador no envía la cookie en POST desde otro sitio.
+  res.cookie('sid', id, { path: '/', sameSite: 'lax' });
+  res.cookie('csrf', csrfToken, { path: '/', sameSite: 'lax' });
 
   return id;
 }
