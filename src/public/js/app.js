@@ -10,6 +10,7 @@
 
   var API = '/api';
   var CARRITO_KEY = 'origen.carrito';
+  var csrfToken = '';
 
   var estado = {
     tipo: '',
@@ -41,10 +42,29 @@
     return n.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' });
   }
 
+  function cargarCsrf() {
+    return fetch(API + '/csrf-token', { credentials: 'same-origin' })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        csrfToken = data.token || data.csrfToken || '';
+        return csrfToken;
+      })
+      .catch(function () { return ''; });
+  }
+
   function api(url, opciones) {
-    return fetch(API + url, opciones).then(function (res) {
-      return res.json().catch(function () { return {}; }).then(function (data) {
-        return { ok: res.ok, status: res.status, data: data };
+    var opts = opciones || {};
+    var metodo = (opts.method || 'GET').toUpperCase();
+    var esEscritura = ['POST', 'PUT', 'PATCH', 'DELETE'].indexOf(metodo) !== -1;
+    var listo = !esEscritura || csrfToken ? Promise.resolve() : cargarCsrf();
+
+    return listo.then(function () {
+      var headers = Object.assign({}, opts.headers || {});
+      if (esEscritura && csrfToken) headers['X-CSRF-Token'] = csrfToken;
+      return fetch(API + url, Object.assign({}, opts, { headers: headers })).then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          return { ok: res.ok, status: res.status, data: data };
+        });
       });
     });
   }

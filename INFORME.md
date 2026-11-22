@@ -219,3 +219,43 @@
 
 El cambio de fondo fue dejar de tratar el texto como HTML. La corrección no es "limpiar" el payload del usuario — siempre aparece una variante que se escapa — sino elegir el destino correcto: `textContent` cuando se muestra texto, `setAttribute` cuando se setea un atributo, y `createElement` cuando se arma estructura. La validación en servidor y la CSP son capas adicionales, no reemplazos de ese hábito. En un proyecto real, además, habría que usar un framework que escape por defecto y prohibir `innerHTML` con una regla de lint, para que la falla no vuelva a aparecer en el próximo cambio.
 
+## VUL-08 · Cross-Site Request Forgery (CSRF)
+
+- **Qué es y por qué importa:** un sitio de un tercero podía hacer que el navegador de un usuario con sesión iniciada enviara peticiones a la API de la cafetería sin que él lo supiera. El navegador adjunta la cookie de sesión automáticamente, así que el servidor tomaba esas acciones como legítimas: crear pedidos, publicar reseñas o modificar productos y roles desde el panel.
+- **Dónde está (versión original):**
+  - `src/middleware/sesion.ts:61-62`: `res.cookie('sid', id, { path: '/' })` — sin `sameSite`, así que la cookie viajaba también en peticiones desde otros sitios.
+  - `src/routes/pedidos.routes.ts:18`, `src/routes/comentarios.routes.ts:24` y las rutas de `src/routes/admin.routes.ts`: operaciones POST/PUT/PATCH/DELETE sin ningún token ni verificación de origen.
+  - `src/app.ts`: no había endpoint que entregara un token ni middleware que lo validara.
+- **Cómo se observa:** con una sesión iniciada en `admin.html`, abrir en otra pestaña el `ataque.html` de la guía (un formulario oculto con `action` apuntando a `http://localhost:8080/api/pedidos` que se envía solo). En la versión vulnerable el pedido se creaba igual, aunque la petición viniera de otra página.
+- **Por qué ocurre:** la autenticación por cookie no distingue quién inició la petición. Si el servidor acepta una escritura con sólo la cookie `sid`, cualquier sitio que el usuario tenga abierto puede dispararla.
+- **Cómo se corrige:** tres capas, en `src/middleware/csrf.ts` y `src/middleware/sesion.ts`:
+
+  1. **Token por sesión** con `randomBytes(32).toString('hex')`, guardado en `Sesion.csrfToken` y entregado por `GET /api/csrf-token`. El cliente lo reenvía en `X-CSRF-Token`, en el campo `_csrf` o en `?_csrf=`. El servidor compara las tres copias (token recibido, cookie `csrf` y token de la sesión) con `timingSafeEqual`:
+
+     ```ts
+     const token = tokenDePeticion(req);
+     const cookie = leerCookies(req).csrf || '';
+     if (!iguales(token, cookie)) {
+       res.status(403).json({ error: 'Token anti-CSRF inválido o ausente.' });
+       return;
+     }
+     const sesion = obtenerSesion(req);
+     if (sesion && !iguales(token, sesion.csrfToken)) { /* 403 */ }
+     ```
+
+  2. **Cookie `SameSite: lax`** en `sid` y en `csrf`, para que el navegador no las envíe en POST cross-site. Queda para la Práctica 5 agregar `HttpOnly` y `Secure` a `sid`.
+  3. **Chequeo de `Origin`/`Referer`** contra el host de la petición, sólo cuando esas cabeceras están presentes (si faltan, decide el token). Un origen distinto se rechaza con `{"error":"Origen de la petición no permitido."}`.
+
+  El middleware `verificarCsrf` se monta en `src/app.ts` justo después de los parsers de body y cubre todas las escrituras. Se exceptúa `/api/auth/login`: todavía no hay sesión y el login forzado no entrega al atacante una sesión; además queda cubierto por `SameSite` y por `Origin`. Los clientes (`app.js` y `admin.js`) cargan el token con `cargarCsrf()` y lo agregan como cabecera en todo POST/PUT/PATCH/DELETE. Tras el login se vuelve a cargar, porque cambia el token de la sesión.
+- **Cómo se verifica:**
+  - `npm run test:seguridad` → bloque *Seguridad · CSRF* **1/1**: `✔ existe un token anti-CSRF y las peticiones sin token se rechazan`. El test hace login, pide el token y comprueba que un POST a `/api/pedidos` sin token se rechaza mientras que con token funciona.
+  - `npm run check:security` → `✔ CSRF-01`, `✔ CSRF-02`, `✔ CSRF-03` y `✔ CSRF-04`. El total pasó de 12/37 a **15/37** controles críticos; los 22 restantes son de las prácticas 4-6.
+  - `npm test` → **28/28** en verde: los helpers de los tests funcionales ya enviaban el token, así que no hicieron falta cambios en tests.
+  - Demo manual: sin token, `POST /api/pedidos` responde `403 {"error":"Token anti-CSRF inválido o ausente."}`; con el formulario legítimo del sitio el pedido se crea normalmente y el panel sigue pudiendo cambiar estados y roles.
+
+## Reflexión de la práctica 3
+
+CSRF se resuelve con una idea simple: una cookie prueba *qué sesión* es, pero no *quién* pidió la acción. Por eso hace falta un valor que el sitio legítimo sepa enviar y un sitio externo no pueda leer. El doble envío (cookie + cabecera) es barato y funciona sin estado extra; comparar también contra el token guardado en la sesión evita que un atacante que puede escribir una cookie fije su propio valor. `SameSite` y `Origin` no reemplazan al token: son defensa en profundidad para navegadores o casos donde el token se pierde.
+
+Un detalle a corregir en la Práctica 5: el middleware global devuelve `403` antes de que corra la lógica de las rutas, así que algunas pruebas de las prácticas pendientes pasan "por el motivo equivocado" (por ejemplo, `no se aceptan cantidades negativas` recibe 403 por falta de token en vez de un 400 de validación). No se modificaron los tests; conviene revisar esos casos cuando se implementen validación y autorización para que el resultado verde signifique realmente lo que dice. La batería completa quedó en 19 pasos y 10 fallos, todos correspondientes a las Prácticas 4-6 (fuerza bruta, validación, sesiones, comandos y diagnóstico).
+

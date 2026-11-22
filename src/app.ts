@@ -3,6 +3,7 @@ import express from 'express';
 import helmet from 'helmet';
 
 import config from './config';
+import { emitirTokenCsrf, verificarCsrf } from './middleware/csrf';
 import { rutaNoEncontrada, manejadorErrores } from './middleware/errores';
 import authRoutes from './routes/auth.routes';
 import productosRoutes from './routes/productos.routes';
@@ -41,6 +42,11 @@ app.use(
 
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// El cliente pide acá su token (anónimo o de la sesión) antes de escribir.
+app.get('/api/csrf-token', emitirTokenCsrf);
+// Toda petición que cambia estado debe traer el token y la cookie `csrf`.
+app.use(verificarCsrf);
 
 // Archivos subidos por el panel de administración.
 app.use('/uploads', express.static(config.uploadsDir));
