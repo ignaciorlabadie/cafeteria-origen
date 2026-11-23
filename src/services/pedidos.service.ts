@@ -1,5 +1,6 @@
 import * as db from '../db';
 import { calcularPrecio } from '../catalogo';
+import { texto, entero, arrayNoVacio, idEntero } from '../validacion';
 import type { Pedido, PedidoConItems, PedidoItem, Producto } from '../tipos';
 
 /** Un renglón del pedido, tal como llega en el cuerpo de la petición. */
@@ -21,19 +22,9 @@ type Id = number | string;
 /**
  * Servicio de pedidos.
  *
- * -----------------------------------------------------------------------------
- * FALLA — Validación de entrada débil o insuficiente (OWASP A04:2021)
- * -----------------------------------------------------------------------------
- * No se valida nada de lo que llega en el cuerpo de la petición:
- *  - `cantidad` puede ser negativa (el total del pedido queda negativo),
- *    cero, un número decimal o un texto.
- *  - No hay un máximo de items ni de cantidad (DoS / facturas absurdas).
- *  - `mesa` y `cliente` no se validan ni se acotan en longitud.
- *  - Si el productoId no existe, la excepción sube y se filtra el stack.
- *
- * La corrección es validar TIPO (entero), RANGO (1..N), LONGITUD y FORMATO
- * de cada campo en el servidor, usando listas blancas.
- * -----------------------------------------------------------------------------
+ * Práctica 4: se valida de nuevo acá, aunque la ruta ya lo haga, porque el
+ * servicio puede ser llamado desde otros lugares. Tipo (entero), rango
+ * (1..100), longitud (mesa/cliente) y formato (array de 1..50 items).
  */
 
 /**
@@ -41,14 +32,23 @@ type Id = number | string;
  * Total = suma de calcularPrecio(producto) x cantidad
  */
 export async function crear({ mesa, cliente, items }: NuevoPedido): Promise<PedidoConItems | null> {
-  // FALLA: no se valida que items exista, sea un array, ni que cada cantidad
-  // sea un entero positivo. Los tipos de `NuevoPedido` NO alcanzan: el cuerpo
-  // de la petición llega como `any` y en ejecución puede traer cualquier cosa.
+  // Los tipos de `NuevoPedido` NO alcanzan: en ejecución puede llegar
+  // cualquier cosa, así que se valida antes de calcular el total.
+  const m = texto(mesa, 1, 20, 'mesa');
+  const c = texto(cliente, 1, 80, 'cliente');
+  const renglones = arrayNoVacio(items, 50, 'items').map((item) => {
+    const renglon = item as Record<string, unknown>;
+    return {
+      productoId: idEntero(renglon.productoId, 'productoId'),
+      cantidad: entero(renglon.cantidad, 1, 100, 'cantidad'),
+    };
+  });
+
   const filas: { productoId: number; cantidad: number; precioUnitario: number }[] = [];
 
-  for (const item of items) {
-    // Si el producto no existe, buscarProducto devuelve null y `precio`
-    // revienta con un TypeError cuyo stack se filtra al cliente.
+  for (const item of renglones) {
+    // Si el producto no existe, el error 500 ya no filtra su traza: el
+    // manejador global responde con un mensaje genérico.
     const producto = await buscarProducto(item.productoId);
     const precioUnitario = calcularPrecio(producto);
     filas.push({
@@ -67,7 +67,7 @@ export async function crear({ mesa, cliente, items }: NuevoPedido): Promise<Pedi
     `INSERT INTO pedidos (mesa, cliente, estado, total)
      VALUES ($1, $2, 'abierto', $3)
      RETURNING *`,
-    [mesa, cliente, total]
+    [m, c, total]
   );
   const pedido = rows[0];
 

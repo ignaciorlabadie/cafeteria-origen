@@ -12,21 +12,13 @@ export interface NuevoComentario {
 /**
  * Servicio de comentarios / reseñas de la cafetería.
  *
- * -----------------------------------------------------------------------------
- * FALLA — Validación de entrada débil (OWASP A04:2021)
- * -----------------------------------------------------------------------------
- * No se valida longitud, ni formato, ni que la calificación esté en rango.
+ * Validación (Práctica 4): autor y texto se recortan y se acotan por longitud,
+ * la calificación se restringe a 1..5. Se valida acá también, aunque la ruta
+ * ya lo haga, por defensa en profundidad.
  *
- * -----------------------------------------------------------------------------
- * FALLA — Cross-Site Scripting almacenado (OWASP A03:2021)
- * -----------------------------------------------------------------------------
- * El texto del comentario se guarda tal cual y luego se devuelve en las
- * respuestas JSON que la web inserta en el DOM. Como el cliente lo pinta con
- * innerHTML, el script queda almacenado en la base y se ejecuta en el
- * navegador de CADA visitante (incluidos los administradores).
- *
- * Corrección: escapar/sanear la salida en el cliente (textContent en vez de
- * innerHTML) o, mejor, sanitizar en el servidor y aplicar CSP como capa extra.
+ * XSS almacenado: el texto se guarda tal cual en la base, pero el cliente lo
+ * pinta con textContent y la CSP bloquea scripts inline, así que el payload
+ * se muestra como texto y no se ejecuta.
  */
 
 /** Lista todos los comentarios, del más nuevo al más viejo. */
@@ -38,9 +30,13 @@ export async function listar(): Promise<Comentario[]> {
 }
 
 /** Crea un comentario. */
-export async function crear({ autor, texto, calificacion }: NuevoComentario): Promise<Comentario> {
+export async function crear({
+  autor,
+  texto: textoComentario,
+  calificacion,
+}: NuevoComentario): Promise<Comentario> {
   const a = texto(autor, 2, 40, 'autor');
-  const t = texto(texto, 3, 280, 'texto');
+  const t = texto(textoComentario, 3, 280, 'texto').trim();
   const c = entero(calificacion, 1, 5, 'calificación');
   const { rows } = await db.query<Comentario>(
     `INSERT INTO comentarios (autor, texto, calificacion)
