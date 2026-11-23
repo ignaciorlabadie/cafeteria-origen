@@ -1,5 +1,6 @@
 import express from 'express';
 import * as comentarios from '../services/comentarios.service';
+import { texto, entero } from '../validacion';
 
 const router = express.Router();
 
@@ -19,16 +20,18 @@ router.get('/', async (req, res, next) => {
  * POST /api/comentarios
  *
  * CSRF: cubierto por el middleware global `verificarCsrf`.
- *
- * FALLAS (Práctica 4): sin validación de longitud/rango ni de contenido.
+ * Validación de entrada (Práctica 4): autor, texto y calificación.
  */
 router.post('/', async (req, res, next) => {
   try {
-    const { autor, texto, calificacion } = req.body || {};
+    const { autor, texto: textoComentario, calificacion } = req.body || {};
+    const a = texto(autor, 2, 40, 'autor');
+    const t = texto(textoComentario, 3, 280, 'texto');
+    const c = entero(calificacion, 1, 5, 'calificación');
     const comentario = await comentarios.crear({
-      autor,
-      texto,
-      calificacion,
+      autor: a,
+      texto: t,
+      calificacion: c,
     });
     res.status(201).json(comentario);
   } catch (err) {

@@ -1,4 +1,5 @@
 import * as db from '../db';
+import { texto, entero } from '../validacion';
 import type { Comentario } from '../tipos';
 
 /** Datos de una reseña nueva, tal como llegan en el cuerpo de la petición. */
@@ -38,12 +39,14 @@ export async function listar(): Promise<Comentario[]> {
 
 /** Crea un comentario. */
 export async function crear({ autor, texto, calificacion }: NuevoComentario): Promise<Comentario> {
-  // FALLA: sin validación de longitud ni de rango de calificación.
+  const a = texto(autor, 2, 40, 'autor');
+  const t = texto(texto, 3, 280, 'texto');
+  const c = entero(calificacion, 1, 5, 'calificación');
   const { rows } = await db.query<Comentario>(
     `INSERT INTO comentarios (autor, texto, calificacion)
      VALUES ($1, $2, $3)
      RETURNING *`,
-    [autor, texto, calificacion]
+    [a, t, c]
   );
   return rows[0];
 }
