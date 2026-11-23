@@ -79,3 +79,65 @@ export function arrayNoVacio(
   }
   return valor;
 }
+
+import { randomBytes } from 'crypto';
+
+/**
+ * Valida que la extensión del nombre de archivo esté en la lista blanca permitida.
+ * Lanza ErrorValidacion si no coincide.
+ */
+export function validarExtension(
+  nombre: string,
+  permitidas: string[]
+): string {
+  const ext = nombre.slice(nombre.lastIndexOf('.')).toLowerCase();
+  if (!ext || !permitidas.includes(ext)) {
+    throw new ErrorValidacion(
+      `Extensión no permitida: "${ext}". Permitidas: ${permitidas.join(', ')}.`
+    );
+  }
+  return ext;
+}
+
+/**
+ * Valida que los bytes iniciales del archivo (magic number) coincidan con
+ * algún tipo MIME permitido. Lanza ErrorValidacion si no coincide.
+ */
+export function validarMagicNumber(
+  buffer: Buffer,
+  tipos: Record<string, Buffer[]>
+): string {
+  for (const [mime, magics] of Object.entries(tipos)) {
+    for (const magic of magics) {
+      if (
+        buffer.length >= magic.length &&
+        buffer.subarray(0, magic.length).equals(magic)
+      ) {
+        return mime;
+      }
+    }
+  }
+  throw new ErrorValidacion(
+    'Tipo de archivo no permitido: el contenido no coincide con una imagen válida.'
+  );
+}
+
+/**
+ * Valida que el tamaño del archivo no exceda el máximo permitido (en bytes).
+ * Lanza ErrorValidacion si se pasa.
+ */
+export function validarTamaño(bytes: number, max: number): void {
+  if (bytes > max) {
+    throw new ErrorValidacion(
+      `El archivo excede el tamaño máximo de ${max} bytes.`
+    );
+  }
+}
+
+/**
+ * Genera un nombre de archivo seguro (sin ruta, sin caracteres del cliente).
+ * Devuelve crypto.randomUUID() + extensión.
+ */
+export function nombreArchivoSeguro(ext: string): string {
+  return `${randomBytes(16).toString('hex')}${ext}`;
+}
