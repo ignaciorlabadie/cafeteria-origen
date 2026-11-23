@@ -1,5 +1,6 @@
 import express from 'express';
 import * as catalogo from '../services/catalogo.service';
+import { idEntero } from '../validacion';
 import type { FiltrosCatalogo } from '../services/catalogo.service';
 
 const router = express.Router();
@@ -50,7 +51,7 @@ router.get('/variedades', async (req, res, next) => {
  */
 router.get('/:id', async (req, res, next) => {
   try {
-    const producto = await catalogo.obtener(req.params.id);
+    const producto = await catalogo.obtener(idEntero(req.params.id));
     if (!producto) {
       return res.status(404).json({ error: 'No existe ese producto.' });
     }
