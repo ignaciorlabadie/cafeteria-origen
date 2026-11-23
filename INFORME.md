@@ -284,3 +284,13 @@ Un detalle a corregir en la Práctica 5: el middleware global devuelve `403` ant
   Los helpers `texto()` y `entero()` viven en `src/validacion.ts` y lanzan `ErrorValidacion` (HTTP 400) si fallan.
 - **Cómo se verifica:** `npm run test:seguridad` → `✔ no se aceptan reseñas sin límite de longitud`; enviar una reseña de 5000 caracteres responde 4xx.
 
+## VUL-12 · Subida de archivos sin restricciones
+
+- **Qué es y por qué importa:** el panel permite subir archivos sin validar extensión, tipo MIME real ni tamaño, y guarda el archivo con el nombre que envía el cliente (sin sanitizar "../"). Como los archivos se sirven con `express.static` desde el mismo origen, un `.html` con `<script>` se ejecuta como XSS almacenado en el dominio de la cafetería, y un nombre con `../../` puede escribir fuera de la carpeta `uploads/`.
+- **Dónde está:** `src/routes/admin.routes.ts:180-196` (versión original): `fs.writeFileSync(path.join(config.uploadsDir, nombre), buffer)` sin ninguna validación.
+- **Cómo se observa:** en el panel se sube un `.html` con `<script>alert(1)</script>`, se abre la URL devuelta y el script corre en el sitio. Con nombre `../../pwned.html` se intenta escribir fuera de `uploads/`.
+- **Por qué ocurre:** no hay lista blanca de extensiones, no se verifica el magic number del archivo, no se limita el tamaño, y el nombre lo decide el cliente.
+- **Cómo se corrige:** validar extensión contra lista blanca (`.png`, `.jpg`, `.webp`), verificar el magic number del buffer, limitar el tamaño, y generar un nombre aleatorio con `crypto.randomUUID()` en el servidor. Los helpers reutilizables para esta tarea están en `src/validacion.ts` (`validarExtension`, `validarMagicNumber`, `validarTamaño`, `nombreArchivoSeguro`) y se entregan a Juan para que los use en `admin.routes.ts`.
+- **Cómo se verifica:** `npm run test:seguridad` → `✔ no se aceptan archivos ejecutables ni se escribe fuera de uploads`; subir un `.html` o hacer path traversal responde 4xx y no escribe fuera de `uploads/`.
+- **Estado:** identificado; la corrección de `admin.routes.ts` la implementa Juan en su rama (no está en el alcance de esta rama).
+
