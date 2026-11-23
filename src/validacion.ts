@@ -25,3 +25,57 @@ export class ErrorValidacion extends Error implements ErrorHttp {
     this.name = 'ErrorValidacion';
   }
 }
+
+/**
+ * Valida que un valor sea un string dentro de un rango de longitud.
+ * Lanza ErrorValidacion si no es string o está fuera de rango.
+ */
+export function texto(
+  valor: unknown,
+  min: number,
+  max: number,
+  campo: string
+): string {
+  if (typeof valor !== 'string' || valor.length < min || valor.length > max) {
+    throw new ErrorValidacion(
+      `El campo "${campo}" debe ser un texto de ${min} a ${max} caracteres.`
+    );
+  }
+  return valor;
+}
+
+/**
+ * Valida que un valor sea un entero dentro de un rango.
+ * Lanza ErrorValidacion si no es un número entero o está fuera de rango.
+ */
+export function entero(
+  valor: unknown,
+  min: number,
+  max: number,
+  campo: string
+): number {
+  const n = Number(valor);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new ErrorValidacion(
+      `El campo "${campo}" debe ser un entero entre ${min} y ${max}.`
+    );
+  }
+  return n;
+}
+
+/**
+ * Valida que un valor sea un array con entre 1 y maxItems elementos.
+ * Lanza ErrorValidacion si no es un array o excede la cantidad.
+ */
+export function arrayNoVacio(
+  valor: unknown,
+  maxItems: number,
+  campo: string
+): unknown[] {
+  if (!Array.isArray(valor) || valor.length === 0 || valor.length > maxItems) {
+    throw new ErrorValidacion(
+      `El campo "${campo}" debe ser un array con entre 1 y ${maxItems} elementos.`
+    );
+  }
+  return valor;
+}
