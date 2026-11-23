@@ -1,13 +1,9 @@
 /**
  * Manejo de errores.
  *
- * FALLA — Exposición de información sensible:
- * la respuesta al cliente incluye el mensaje de error original y el stack
- * trace completo, que revela rutas internas del servidor, nombres de tablas,
- * fragmentos de consultas SQL y versiones de librerías.
- *
- * Corrección: responder con un mensaje genérico ("Error interno") y registrar
- * el detalle real en el log del servidor.
+ * Los errores 4xx devuelven el mensaje de validación (no reflejan entrada del
+ * cliente). Los 5xx responden con un mensaje fijo: la traza real queda sólo
+ * en el log del servidor, nunca en la respuesta HTTP.
  */
 
 import type { NextFunction, Request, Response } from 'express';
@@ -24,11 +20,13 @@ export function rutaNoEncontrada(req: Request, res: Response): void {
 // tiene que estar aunque no se use.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function manejadorErrores(err: ErrorHttp, req: Request, res: Response, next: NextFunction): void {
-  console.error('[error]', err.message);
+  const status = err.status || 500;
+  // El objeto completo (con su traza) se registra acá, no se devuelve.
+  console.error('[error]', status, err);
 
-  // FALLA: se filtra el stack trace al cliente.
-  res.status(err.status || 500).json({
-    error: err.message,
-    stack: err.stack,
-  });
+  if (status >= 500) {
+    res.status(500).json({ error: 'Error interno del servidor.' });
+    return;
+  }
+  res.status(status).json({ error: err.message });
 }
