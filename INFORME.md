@@ -167,8 +167,8 @@
   cont.appendChild(reseña);
   ```
 
-  El límite de longitud del texto en el servidor (XSS-04) queda para la práctica de validación de entrada.
-- **Cómo se verifica:** `npm run check:security` → `✔ XSS-01` (ningún `innerHTML` en `src/public/js`); recargar el sitio con una reseña que contenga HTML: se muestra como texto, sin alerts.
+  En la Práctica 4 se agregó además el límite de longitud en servidor (autor 2‑40, texto 3‑280, calificación 1‑5), así que el payload ni siquiera se guarda (XSS‑04).
+- **Cómo se verifica:** `npm run check:security` → `✔ XSS-01` y `✔ XSS-04`; recargar el sitio con una reseña que contenga HTML: se muestra como texto, sin alerts.
 
 ## VUL-07 · Cross-Site Scripting de DOM en el panel
 
@@ -257,7 +257,7 @@ El cambio de fondo fue dejar de tratar el texto como HTML. La corrección no es 
 
 CSRF se resuelve con una idea simple: una cookie prueba *qué sesión* es, pero no *quién* pidió la acción. Por eso hace falta un valor que el sitio legítimo sepa enviar y un sitio externo no pueda leer. El doble envío (cookie + cabecera) es barato y funciona sin estado extra; comparar también contra el token guardado en la sesión evita que un atacante que puede escribir una cookie fije su propio valor. `SameSite` y `Origin` no reemplazan al token: son defensa en profundidad para navegadores o casos donde el token se pierde.
 
-Un detalle a corregir en la Práctica 5: el middleware global devuelve `403` antes de que corra la lógica de las rutas, así que algunas pruebas de las prácticas pendientes pasan "por el motivo equivocado" (por ejemplo, `no se aceptan cantidades negativas` recibe 403 por falta de token en vez de un 400 de validación). No se modificaron los tests; conviene revisar esos casos cuando se implementen validación y autorización para que el resultado verde signifique realmente lo que dice. La batería completa quedó en 19 pasos y 10 fallos, todos correspondientes a las Prácticas 4-6 (fuerza bruta, validación, sesiones, comandos y diagnóstico).
+Un detalle que se corrigió al iniciar la Práctica 4: el middleware global devolvía `403` antes de que corriera la lógica de las rutas, así que pruebas como `no se aceptan cantidades negativas` pasaban por falta de token en vez de por la validación. Ahora el token se exige **sólo cuando hay sesión** (`verificarCsrf` en `src/middleware/csrf.ts`), porque CSRF es el abuso de la sesión de la víctima: publicar una reseña o pedir un café ya son acciones públicas. Las rutas del panel siguen protegidas por `requiereSesion`. Los logs de la batería confirman que esos tests ahora responden `400 ErrorValidacion`.
 
 ## VUL-10 · Validación de entrada ausente en pedidos
 
@@ -265,9 +265,22 @@ Un detalle a corregir en la Práctica 5: el middleware global devuelve `403` ant
 - **Dónde está:** `src/services/pedidos.service.ts:41-64` (versión original): el bucle `for (const item of items)` usa `item.cantidad` sin validar que sea un entero positivo.
 - **Cómo se observa:** `POST /api/pedidos` con `{"items":[{"productoId":4,"cantidad":-5}]}` devuelve un total negativo. Con `cantidad: "abc"` el total queda `NaN`.
 - **Por qué ocurre:** TypeScript solo anota tipos en tiempo de compilación; en ejecución `req.body` puede tener cualquier forma. No hay validación del lado del servidor.
-- **Cómo se corrige:** aplicar `entero(cantidad, 1, MAX, 'cantidad')` y `texto(mesa, 1, 20, 'mesa')` etc. en el servidor antes de calcular el total. Los helpers reutilizables están en `src/validacion.ts`.
-- **Cómo se verifica:** `npm run test:seguridad` → `✔ no se aceptan cantidades negativas` y `✔ no se aceptan cantidades no numéricas`.
-- **Estado:** identificado; la corrección de `pedidos.service.ts` queda para una rama separada (no está en el alcance de esta rama).
+- **Cómo se corrige:** se valida en `src/routes/pedidos.routes.ts` **y** en `src/services/pedidos.service.ts` (defensa en profundidad), antes de calcular el total:
+
+  ```ts
+  const mesa = texto(cuerpo.mesa, 1, 20, 'mesa');
+  const cliente = texto(cuerpo.cliente, 1, 80, 'cliente');
+  const items = arrayNoVacio(cuerpo.items, 50, 'items').map((item) => {
+    const renglon = item as Record<string, unknown>;
+    return {
+      productoId: idEntero(renglon.productoId, 'productoId'),
+      cantidad: entero(renglon.cantidad, 1, 100, 'cantidad'),
+    };
+  });
+  ```
+
+  Los helpers viven en `src/validacion.ts` y lanzan `ErrorValidacion` (HTTP 400).
+- **Cómo se verifica:** `npm run test:seguridad` → `✔ no se aceptan cantidades negativas` y `✔ no se aceptan cantidades no numéricas`. Los logs muestran `400 ErrorValidacion: El campo "cantidad" debe ser un entero entre 1 y 100`, es decir, la validación se ejecuta de verdad (antes estos tests pasaban por un `403` de CSRF).
 
 ## VUL-11 · Reseñas sin límites
 
@@ -278,11 +291,11 @@ Un detalle a corregir en la Práctica 5: el middleware global devuelve `403` ant
 - **Cómo se corrige:** en la ruta y en el servicio, aplicar:
   ```ts
   const a = texto(autor, 2, 40, 'autor');
-  const t = texto(texto, 3, 280, 'texto');
+  const t = texto(textoComentario, 3, 280, 'texto').trim();
   const c = entero(calificacion, 1, 5, 'calificación');
   ```
-  Los helpers `texto()` y `entero()` viven en `src/validacion.ts` y lanzan `ErrorValidacion` (HTTP 400) si fallan.
-- **Cómo se verifica:** `npm run test:seguridad` → `✔ no se aceptan reseñas sin límite de longitud`; enviar una reseña de 5000 caracteres responde 4xx.
+  Los helpers `texto()` y `entero()` viven en `src/validacion.ts` y lanzan `ErrorValidacion` (HTTP 400) si fallan. En el servicio se renombró el parámetro a `textoComentario`: antes el parámetro tapaba al helper `texto()` y cualquier alta de reseña reventaba con un 500.
+- **Cómo se verifica:** `npm run test:seguridad` → `✔ no se aceptan reseñas sin límite de longitud`; enviar una reseña de 5000 caracteres responde `400`. `npm run check:security` → `✔ XSS-04`.
 
 ## VUL-12 · Subida de archivos sin restricciones
 
@@ -290,7 +303,46 @@ Un detalle a corregir en la Práctica 5: el middleware global devuelve `403` ant
 - **Dónde está:** `src/routes/admin.routes.ts:180-196` (versión original): `fs.writeFileSync(path.join(config.uploadsDir, nombre), buffer)` sin ninguna validación.
 - **Cómo se observa:** en el panel se sube un `.html` con `<script>alert(1)</script>`, se abre la URL devuelta y el script corre en el sitio. Con nombre `../../pwned.html` se intenta escribir fuera de `uploads/`.
 - **Por qué ocurre:** no hay lista blanca de extensiones, no se verifica el magic number del archivo, no se limita el tamaño, y el nombre lo decide el cliente.
-- **Cómo se corrige:** validar extensión contra lista blanca (`.png`, `.jpg`, `.webp`), verificar el magic number del buffer, limitar el tamaño, y generar un nombre aleatorio con `crypto.randomUUID()` en el servidor. Los helpers reutilizables para esta tarea están en `src/validacion.ts` (`validarExtension`, `validarMagicNumber`, `validarTamaño`, `nombreArchivoSeguro`) y se entregan a Juan para que los use en `admin.routes.ts`.
-- **Cómo se verifica:** `npm run test:seguridad` → `✔ no se aceptan archivos ejecutables ni se escribe fuera de uploads`; subir un `.html` o hacer path traversal responde 4xx y no escribe fuera de `uploads/`.
-- **Estado:** identificado; la corrección de `admin.routes.ts` la implementa Juan en su rama (no está en el alcance de esta rama).
+- **Cómo se corrige:** `src/routes/admin.routes.ts` conecta los helpers que ya existían en `src/validacion.ts`:
+
+  ```ts
+  const EXTENSIONES_IMAGEN = ['.png', '.jpg', '.jpeg', '.webp'];
+  const TAMANO_MAXIMO = 2 * 1024 * 1024;
+
+  const extension = validarExtension(path.extname(path.basename(nombre)), EXTENSIONES_IMAGEN);
+  const buffer = Buffer.from(contenidoBase64, 'base64');
+  validarTamaño(buffer.length, TAMANO_MAXIMO);
+  validarMagicNumber(buffer, MIME_IMAGENES);
+
+  const archivo = nombreArchivoSeguro(extension);
+  const destino = path.resolve(config.uploadsDir, archivo);
+  if (!destino.startsWith(path.resolve(config.uploadsDir) + path.sep)) {
+    throw new ErrorValidacion('Ruta de destino no permitida.');
+  }
+  ```
+
+  El tipo MIME se comprueba por *magic number* del buffer, no por el `Content-Type` que manda el cliente. El nombre lo genera el servidor, así que `../../pwned.html` nunca decide la ruta de escritura.
+- **Cómo se verifica:** `npm run test:seguridad` → `✔ no se aceptan archivos ejecutables ni se escribe fuera de uploads`; los logs muestran `400 ErrorValidacion: Extensión no permitida: ".html"`. `check:security` → `✔ VAL-04` y `✔ VAL-05`.
+
+## VUL-13 · Identificadores de ruta sin validar
+
+- **Qué es y por qué importa:** los parámetros `:id` llegaban como texto a los servicios y se usaban directamente en consultas parametrizadas. Aunque no había inyección SQL, valores como `abc` o `1;DROP` llegaban hasta la base y provocaban errores 500 o respuestas engañosas.
+- **Dónde está:** `src/routes/productos.routes.ts:53`, `src/routes/pedidos.routes.ts:50,66`, `src/routes/comentarios.routes.ts:46` y `src/routes/admin.routes.ts:58,85,102` (versión original).
+- **Por qué no se había detectado:** `check:security` daba `✔ VAL-01` porque `Number.isInteger` aparecía dentro de `src/validacion.ts`, pero **ninguna ruta lo usaba**. Era un falso verde del análisis estático.
+- **Cómo se corrige:** `idEntero()` (entero positivo, `1..Number.MAX_SAFE_INTEGER`) se aplica en los siete puntos antes de llamar al servicio.
+- **Cómo se verifica:** `npm run check:security` → `✔ VAL-01`, ahora por código ejecutado en las rutas; un `GET /api/productos/abc` responde 400 en vez de 500.
+
+## VUL-14 · Stack trace filtrado al cliente
+
+- **Qué es y por qué importa:** `src/middleware/errores.ts` respondía `{ error: err.message, stack: err.stack }`. La traza revela rutas internas, nombres de archivos, consultas SQL y versiones de librerías.
+- **Cómo se corrige:** los 4xx devuelven el mensaje de validación; los 5xx responden `{"error":"Error interno del servidor."}`. El objeto completo (con su traza) se registra con `console.error` en el servidor, nunca en la respuesta HTTP.
+- **Cómo se verifica:** `npm run test:seguridad` → `✔ la API NO devuelve stack traces al cliente`; `check:security` → `✔ VAL-06`.
+
+## Reflexión de la práctica 4
+
+La regla es la misma que en XSS: no confiar en el cliente. El `type="number"` del HTML y los `min`/`max` se pueden cambiar con el devtools, así que el servidor tiene que volver a comprobar tipo, longitud, rango y formato. Centralizar los helpers en `src/validacion.ts` evita que cada ruta invente su propia validación, y `ErrorValidacion` (400) permite separar claramente "entrada inválida" de "fallo interno".
+
+Dos aprendizajes del estado inicial de esta práctica: un checklist estático puede pintar un control en verde por la palabra clave equivocada (VAL‑01) y un test puede pasar por un `403` que no tiene nada que ver con lo que dice (los tres tests de validación con CSRF global). Por eso conviene mirar también los logs de la batería, no sólo el ✔. Los helpers de archivo que el compañero dejó preparados sólo servían de algo una vez conectados a la ruta.
+
+Resultado final de la práctica: `check:security` **20/37** controles críticos (17 pendientes son Prácticas 5 y 6) y 3 recomendados; bloque *Validación de entrada* **4/4**; `npm test` **28/28**; `npm run test:seguridad` **20 pasos / 9 fallos**, todos de autenticación, fuerza bruta, comandos y diagnóstico.
 
