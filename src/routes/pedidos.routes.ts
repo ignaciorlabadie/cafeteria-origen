@@ -1,5 +1,6 @@
 import express from 'express';
 import * as pedidos from '../services/pedidos.service';
+import { texto, entero, arrayNoVacio, idEntero } from '../validacion';
 
 const router = express.Router();
 
@@ -7,17 +8,28 @@ const router = express.Router();
  * POST /api/pedidos
  * Crea un pedido y devuelve su total calculado.
  *
- * CSRF: cubierto por el middleware global `verificarCsrf` (token + SameSite
- * + Origin/Referer).
+ * CSRF: cubierto por el middleware global `verificarCsrf` cuando hay sesión
+ * (token + SameSite + Origin/Referer).
  *
- * FALLAS (Práctica 4):
- *  - Validación de entrada débil: no se valida tipo, rango ni longitud de
- *    `cantidad`, `mesa`, `cliente` ni de la lista de items.
- *  - No requiere autenticación ni rol.
+ * Validación de entrada (Práctica 4): tipo, rango y longitud de `cantidad`,
+ * `mesa`, `cliente`, `productoId` y de la lista de items. El servicio vuelve
+ * a validar por defensa en profundidad.
+ *
+ * FALLA (Práctica 5): no requiere autenticación ni rol.
  */
 router.post('/', async (req, res, next) => {
   try {
-    const { mesa, cliente, items } = req.body || {};
+    const cuerpo = req.body || {};
+    const mesa = texto(cuerpo.mesa, 1, 20, 'mesa');
+    const cliente = texto(cuerpo.cliente, 1, 80, 'cliente');
+    const items = arrayNoVacio(cuerpo.items, 50, 'items').map((item) => {
+      const renglon = item as Record<string, unknown>;
+      return {
+        productoId: idEntero(renglon.productoId, 'productoId'),
+        cantidad: entero(renglon.cantidad, 1, 100, 'cantidad'),
+      };
+    });
+
     const pedido = await pedidos.crear({ mesa, cliente, items });
     res.status(201).json(pedido);
   } catch (err) {
@@ -47,7 +59,7 @@ router.get('/', async (req, res, next) => {
  */
 router.get('/:id', async (req, res, next) => {
   try {
-    const pedido = await pedidos.obtenerConItems(req.params.id);
+    const pedido = await pedidos.obtenerConItems(idEntero(req.params.id));
     if (!pedido) {
       return res.status(404).json({ error: 'Pedido no encontrado.' });
     }
@@ -61,9 +73,9 @@ router.get('/:id', async (req, res, next) => {
 router.patch('/:id/estado', async (req, res, next) => {
   try {
     const { estado } = req.body || {};
-    // FALLA: no se valida el valor de `estado` (cualquier texto se acepta)
-    // ni se comprueba el rol del que modifica el pedido.
-    const pedido = await pedidos.cambiarEstado(req.params.id, estado);
+    // FALLA: no se valida el valor de `estado` ni se comprueba el rol del
+    // que modifica el pedido (Práctica 5).
+    const pedido = await pedidos.cambiarEstado(idEntero(req.params.id), estado);
     if (!pedido) {
       return res.status(404).json({ error: 'Pedido no encontrado.' });
     }

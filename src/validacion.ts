@@ -36,12 +36,19 @@ export function texto(
   max: number,
   campo: string
 ): string {
-  if (typeof valor !== 'string' || valor.length < min || valor.length > max) {
+  if (typeof valor !== 'string') {
     throw new ErrorValidacion(
       `El campo "${campo}" debe ser un texto de ${min} a ${max} caracteres.`
     );
   }
-  return valor;
+  // Se recorta antes de medir: "   " no puede colarse como texto válido.
+  const limpio = valor.trim();
+  if (limpio.length < min || limpio.length > max) {
+    throw new ErrorValidacion(
+      `El campo "${campo}" debe ser un texto de ${min} a ${max} caracteres.`
+    );
+  }
+  return limpio;
 }
 
 /**
@@ -61,6 +68,14 @@ export function entero(
     );
   }
   return n;
+}
+
+/**
+ * Valida un identificador de ruta: entero positivo y dentro del rango seguro
+ * de JavaScript. Se usa en todos los `req.params.id` antes de tocar la base.
+ */
+export function idEntero(valor: unknown, campo = 'id'): number {
+  return entero(valor, 1, Number.MAX_SAFE_INTEGER, campo);
 }
 
 /**

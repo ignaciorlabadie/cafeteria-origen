@@ -13,6 +13,13 @@
  * no envían token ahí. Un login forzado desde otro sitio no entrega una
  * sesión utilizada por el atacante y además queda cubierto por SameSite y
  * por el chequeo de Origin.
+ *
+ * Tampoco se exige token cuando NO hay sesión: CSRF es el abuso de la sesión
+ * de la víctima. Pedir un pedido o publicar una reseña ya son acciones
+ * públicas (cualquiera puede hacerlas con su propio navegador), así que un
+ * token ahí sólo lograba que la validación de entrada nunca se ejecutara en
+ * los clientes que no hacen login. Las rutas del panel siguen protegidas
+ * porque `requiereSesion` garantiza que hay sesión.
  */
 
 import { randomBytes, timingSafeEqual } from 'crypto';
@@ -87,6 +94,11 @@ export function verificarCsrf(req: Request, res: Response, next: NextFunction): 
     res.status(403).json({ error: 'Origen de la petición no permitido.' });
     return;
   }
+
+  // Sin sesión no hay nada que suplantar: se deja pasar a la lógica de la
+  // ruta (que es donde se valida la entrada). Con sesión, el token sigue
+  // siendo obligatorio.
+  if (!obtenerSesion(req)) return next();
 
   const token = tokenDePeticion(req);
   const cookie = leerCookies(req).csrf || '';

@@ -7,9 +7,27 @@ import config from '../config';
 import * as catalogo from '../services/catalogo.service';
 import * as usuarios from '../services/usuarios.service';
 import { requiereSesion, requiereRol } from '../middleware/auth';
+import {
+  texto,
+  idEntero,
+  ErrorValidacion,
+  validarExtension,
+  validarMagicNumber,
+  validarTamaño,
+  nombreArchivoSeguro,
+} from '../validacion';
 import type { Usuario } from '../tipos';
 
 const router = express.Router();
+
+/** Sólo imágenes: un .html/.svg se ejecutaría como HTML en el propio origen. */
+const EXTENSIONES_IMAGEN = ['.png', '.jpg', '.jpeg', '.webp'];
+const TAMANO_MAXIMO = 2 * 1024 * 1024; // 2 MB
+const MIME_IMAGENES: Record<string, Buffer[]> = {
+  'image/png': [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+  'image/jpeg': [Buffer.from([0xff, 0xd8, 0xff])],
+  'image/webp': [Buffer.from('RIFF')],
+};
 
 /**
  * Rutas del panel de administración.
@@ -55,7 +73,7 @@ router.put('/usuarios/:id', async (req, res, next) => {
     if (rol !== undefined) cambios.rol = rol;
     if (password !== undefined) cambios.password = password;
 
-    const usuario = await usuarios.actualizar(req.params.id, cambios);
+    const usuario = await usuarios.actualizar(idEntero(req.params.id), cambios);
     if (!usuario) {
       return res.status(404).json({ error: 'Usuario no encontrado.' });
     }
@@ -82,7 +100,7 @@ router.post('/productos', async (req, res, next) => {
 /** PUT /api/admin/productos/:id */
 router.put('/productos/:id', async (req, res, next) => {
   try {
-    const producto = await catalogo.actualizar(req.params.id, req.body || {});
+    const producto = await catalogo.actualizar(idEntero(req.params.id), req.body || {});
     if (!producto) {
       return res.status(404).json({ error: 'Producto no encontrado.' });
     }
@@ -99,7 +117,7 @@ router.put('/productos/:id', async (req, res, next) => {
  */
 router.delete('/productos/:id', async (req, res, next) => {
   try {
-    const producto = await catalogo.eliminar(req.params.id);
+    const producto = await catalogo.eliminar(idEntero(req.params.id));
     if (!producto) {
       return res.status(404).json({ error: 'Producto no encontrado.' });
     }
@@ -164,38 +182,39 @@ router.post('/probar-conexion', (req, res) => {
 /**
  * POST /api/admin/subir-archivo
  *
- * -----------------------------------------------------------------------------
- * FALLA — Carga de archivos sin restricciones (OWASP A04:2021)
- * -----------------------------------------------------------------------------
- * No se valida la extensión, el tipo MIME ni el tamaño del archivo, y se
- * guarda con el nombre que manda el cliente (además sin sanitizar "../", lo
- * que permite escribir fuera de la carpeta de subidas). Los archivos subidos
- * se sirven con express.static desde el mismo origen.
- *
- * Corrección: validar extensión contra lista blanca (.png/.jpg/.svg saneado),
- * verificar el tipo MIME real, limitar el tamaño, generar un nombre aleatorio
- * y guardar fuera del árbol web.
- * -----------------------------------------------------------------------------
+ * Práctica 4: lista blanca de extensiones de imagen, comprobación del tipo
+ * MIME real por magic number, límite de tamaño y nombre generado en el
+ * servidor. El nombre del cliente nunca decide la ruta de escritura.
  */
 router.post('/subir-archivo', express.json({ limit: '8mb' }), (req, res, next) => {
   try {
-    const { nombre, contenidoBase64 } = req.body || {};
+    const nombre = texto(req.body?.nombre, 1, 200, 'nombre');
+    const contenidoBase64 = texto(req.body?.contenidoBase64, 1, 11_000_000, 'contenidoBase64');
 
-    if (!nombre || !contenidoBase64) {
-      return res.status(400).json({ error: 'Falta el archivo.' });
+    // Sólo el nombre base: se descarta cualquier "../" que viniera del cliente.
+    const extension = validarExtension(
+      path.extname(path.basename(nombre)),
+      EXTENSIONES_IMAGEN
+    );
+    const buffer = Buffer.from(contenidoBase64, 'base64');
+    validarTamaño(buffer.length, TAMANO_MAXIMO);
+    validarMagicNumber(buffer, MIME_IMAGENES);
+
+    // Defensa en profundidad: aunque el nombre viniera saneado, verificamos
+    // que el destino resuelto siga dentro de uploads/.
+    const archivo = nombreArchivoSeguro(extension);
+    const raiz = path.resolve(config.uploadsDir) + path.sep;
+    const destino = path.resolve(config.uploadsDir, archivo);
+    if (!destino.startsWith(raiz)) {
+      throw new ErrorValidacion('Ruta de destino no permitida.');
     }
 
-    // FALLA: sin validación de extensión, MIME ni tamaño.
-    const buffer = Buffer.from(contenidoBase64, 'base64');
     fs.mkdirSync(config.uploadsDir, { recursive: true });
-
-    // FALLA: nombre tomado del cliente sin sanear (path traversal).
-    const destino = path.join(config.uploadsDir, nombre);
     fs.writeFileSync(destino, buffer);
 
     res.json({
       mensaje: 'Archivo subido.',
-      url: `/uploads/${nombre}`,
+      url: `/uploads/${archivo}`,
       bytes: buffer.length,
     });
   } catch (err) {
