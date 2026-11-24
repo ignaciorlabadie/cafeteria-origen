@@ -1,7 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 
 import config from '../config';
 import * as catalogo from '../services/catalogo.service';
@@ -29,24 +29,17 @@ const MIME_IMAGENES: Record<string, Buffer[]> = {
   'image/webp': [Buffer.from('RIFF')],
 };
 
+// CMD-03: lista blanca de hosts; cualquier otra entrada se rechaza.
+const HOSTS_PERMITIDOS = ['127.0.0.1', 'proveedor.origen.com'];
+
 /**
  * Rutas del panel de administración.
  *
- * -----------------------------------------------------------------------------
- * FALLA — Autorización ausente / escalada de privilegios (OWASP A01:2021)
- * -----------------------------------------------------------------------------
- * Se exige estar autenticado, pero NO se comprueba el rol: `requiereRol` está
- * importado y no se usa. Cualquier usuario autenticado (incluso con rol
- * "cliente") entra al panel y puede:
- *   - crear, editar y BORRAR productos,
- *   - cambiar contraseñas,
- *   - dar de alta usuarios y cambiarles el rol (escalada de privilegios),
- *   - ejecutar comandos en el servidor.
- *
- * Corrección: `router.use(requiereRol('admin'))` sobre las rutas sensibles.
- * -----------------------------------------------------------------------------
+ * AUTH-14: toda la ruta exige sesión y rol admin. CSRF se aplica de forma
+ * global en src/app.ts mediante `verificarCsrf`.
  */
 router.use(requiereSesion);
+router.use(requiereRol('admin'));
 
 /** GET /api/admin/usuarios */
 router.get('/usuarios', async (req, res, next) => {
@@ -60,9 +53,9 @@ router.get('/usuarios', async (req, res, next) => {
 /**
  * PUT /api/admin/usuarios/:id
  *
- * FALLA — Asignación masiva: se actualiza cualquier campo que llegue en el
- * cuerpo, incluido el `rol`. Un usuario con rol "cliente" puede mandarse
- * `{"rol": "admin"}` y convertirse en administrador.
+ * AUTH-15: todavía se aceptan campos arbitrarios del body.
+ * Con `requiereRol('admin')` un cliente ya no llega acá, pero conviene
+ * restringir los campos permitidos antes de actualizar.
  */
 router.put('/usuarios/:id', async (req, res, next) => {
   try {
@@ -152,31 +145,49 @@ router.post('/cambiar-contrasena', async (req, res, next) => {
 /**
  * POST /api/admin/probar-conexion
  *
- * -----------------------------------------------------------------------------
- * FALLA — Inyección de comandos del sistema operativo (OWASP A03:2021)
- * -----------------------------------------------------------------------------
- * La dirección del proveedor se mete dentro de una cadena de shell.
- * Como `exec` launches /bin/sh -c, los operadores del shell (|, ;, &&, $())
- * se interpretan y permiten ejecutar comandos arbitrarios en el contenedor.
- *
- * Corrección: validar el host contra una LISTA BLANCA y ejecutar el proceso
- * con `spawn('ping', ['-c', '3', host], { shell: false })`, sin pasar por el
- * shell.
- * -----------------------------------------------------------------------------
+ * CMD-01/02/03: el host se valida contra una lista blanca y el ping se
+ * ejecuta con `spawn(..., { shell: false })`, argumentos separados y sin
+ * interpolación en un shell.
  */
-router.post('/probar-conexion', (req, res) => {
-  const { host } = req.body || {};
+router.post('/probar-conexion', (req, res, next) => {
+  try {
+    const host = texto(req.body?.host, 1, 253, 'host');
 
-  // FALLA: entrada de usuario concatenada en un comando de shell.
-  const comando = `ping -c 3 ${host}`;
+    if (!HOSTS_PERMITIDOS.includes(host)) {
+      return res.status(400).json({
+        comando: 'ping',
+        salida: '',
+        error: 'Host no permitido.',
+      });
+    }
 
-  exec(comando, (error, stdout, stderr) => {
-    res.json({
-      comando,
-      salida: stdout,
-      error: stderr || (error ? error.message : null),
+    // CMD-02: nunca concatenar la entrada del usuario en un comando
+    const proceso = spawn('ping', ['-c', '3', host], { shell: false });
+    let salida = '';
+    let error = '';
+
+    proceso.stdout.on('data', (datos: Buffer) => {
+      salida += datos.toString();
     });
-  });
+    proceso.stderr.on('data', (datos: Buffer) => {
+      error += datos.toString();
+    });
+    proceso.on('error', (err) => {
+      if (!res.headersSent) {
+        res.status(500).json({ comando: `ping -c 3 ${host}`, salida, error: err.message });
+      }
+    });
+    proceso.on('close', (codigo) => {
+      if (res.headersSent) return;
+      res.json({
+        comando: `ping -c 3 ${host}`,
+        salida,
+        error: error || (codigo === 0 ? null : `ping terminó con código ${codigo}.`),
+      });
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /**
