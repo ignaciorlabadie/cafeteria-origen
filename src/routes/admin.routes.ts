@@ -1,34 +1,48 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 
 import config from '../config';
 import * as catalogo from '../services/catalogo.service';
 import * as usuarios from '../services/usuarios.service';
 import { requiereSesion, requiereRol } from '../middleware/auth';
-import type { Usuario } from '../tipos';
+import {
+  texto,
+  idEntero,
+  ErrorValidacion,
+  validarExtension,
+  validarMagicNumber,
+  validarTamaño,
+  nombreArchivoSeguro,
+} from '../validacion';
+import type { Rol, Usuario } from '../tipos';
 
 const router = express.Router();
+
+/** Lista blanca de roles: no se acepta cualquier texto desde el cliente. */
+const ROLES: Rol[] = ['admin', 'barista', 'mozo', 'cliente'];
+
+/** Sólo imágenes: un .html/.svg se ejecutaría como HTML en el propio origen. */
+const EXTENSIONES_IMAGEN = ['.png', '.jpg', '.jpeg', '.webp'];
+const TAMANO_MAXIMO = 2 * 1024 * 1024; // 2 MB
+const MIME_IMAGENES: Record<string, Buffer[]> = {
+  'image/png': [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+  'image/jpeg': [Buffer.from([0xff, 0xd8, 0xff])],
+  'image/webp': [Buffer.from('RIFF')],
+};
+
+// CMD-03: lista blanca de hosts; cualquier otra entrada se rechaza.
+const HOSTS_PERMITIDOS = ['127.0.0.1', 'proveedor.origen.com'];
 
 /**
  * Rutas del panel de administración.
  *
- * -----------------------------------------------------------------------------
- * FALLA — Autorización ausente / escalada de privilegios (OWASP A01:2021)
- * -----------------------------------------------------------------------------
- * Se exige estar autenticado, pero NO se comprueba el rol: `requiereRol` está
- * importado y no se usa. Cualquier usuario autenticado (incluso con rol
- * "cliente") entra al panel y puede:
- *   - crear, editar y BORRAR productos,
- *   - cambiar contraseñas,
- *   - dar de alta usuarios y cambiarles el rol (escalada de privilegios),
- *   - ejecutar comandos en el servidor.
- *
- * Corrección: `router.use(requiereRol('admin'))` sobre las rutas sensibles.
- * -----------------------------------------------------------------------------
+ * AUTH-14: toda la ruta exige sesión y rol admin. CSRF se aplica de forma
+ * global en src/app.ts mediante `verificarCsrf`.
  */
 router.use(requiereSesion);
+router.use(requiereRol('admin'));
 
 /** GET /api/admin/usuarios */
 router.get('/usuarios', async (req, res, next) => {
@@ -42,20 +56,37 @@ router.get('/usuarios', async (req, res, next) => {
 /**
  * PUT /api/admin/usuarios/:id
  *
- * FALLA — Asignación masiva: se actualiza cualquier campo que llegue en el
- * cuerpo, incluido el `rol`. Un usuario con rol "cliente" puede mandarse
- * `{"rol": "admin"}` y convertirse en administrador.
+ * Sólo un admin llega acá (middleware anterior). Igual se comprueba de nuevo
+ * el rol antes de aceptar un cambio de `rol`, y se valida contra una lista
+ * blanca. La contraseña nunca se guarda en claro: el servicio la hashea.
  */
 router.put('/usuarios/:id', async (req, res, next) => {
   try {
-    const { username, nombre, rol, password } = req.body || {};
+    const cuerpo = req.body || {};
     const cambios: Partial<Usuario> = {};
-    if (username !== undefined) cambios.username = username;
-    if (nombre !== undefined) cambios.nombre = nombre;
-    if (rol !== undefined) cambios.rol = rol;
-    if (password !== undefined) cambios.password = password;
 
-    const usuario = await usuarios.actualizar(req.params.id, cambios);
+    if (cuerpo.username !== undefined) {
+      cambios.username = texto(cuerpo.username, 2, 40, 'usuario');
+    }
+    if (cuerpo.nombre !== undefined) {
+      cambios.nombre = texto(cuerpo.nombre, 1, 80, 'nombre');
+    }
+    // Se manda en claro por HTTPS, se guarda como hash bcrypt.
+    if (cuerpo.password !== undefined) {
+      cambios.password = texto(cuerpo.password, 8, 200, 'contraseña');
+    }
+
+    if (cuerpo.rol !== undefined) {
+      if (!req.usuario || req.usuario.rol !== 'admin') {
+        return res.status(403).json({ error: 'Sólo un administrador puede cambiar roles.' });
+      }
+      if (!ROLES.includes(cuerpo.rol as Rol)) {
+        throw new ErrorValidacion('Rol no permitido.');
+      }
+      cambios.rol = cuerpo.rol as Rol;
+    }
+
+    const usuario = await usuarios.actualizar(idEntero(req.params.id), cambios);
     if (!usuario) {
       return res.status(404).json({ error: 'Usuario no encontrado.' });
     }
@@ -82,7 +113,7 @@ router.post('/productos', async (req, res, next) => {
 /** PUT /api/admin/productos/:id */
 router.put('/productos/:id', async (req, res, next) => {
   try {
-    const producto = await catalogo.actualizar(req.params.id, req.body || {});
+    const producto = await catalogo.actualizar(idEntero(req.params.id), req.body || {});
     if (!producto) {
       return res.status(404).json({ error: 'Producto no encontrado.' });
     }
@@ -95,12 +126,11 @@ router.put('/productos/:id', async (req, res, next) => {
 /**
  * DELETE /api/admin/productos/:id
  *
- * FALLA — CSRF: la petición que borra un producto no lleva ningún token y se
- * acepta con un simple GET/POST desde cualquier origen.
+ * CSRF: cubierto por el middleware global `verificarCsrf`.
  */
 router.delete('/productos/:id', async (req, res, next) => {
   try {
-    const producto = await catalogo.eliminar(req.params.id);
+    const producto = await catalogo.eliminar(idEntero(req.params.id));
     if (!producto) {
       return res.status(404).json({ error: 'Producto no encontrado.' });
     }
@@ -113,17 +143,15 @@ router.delete('/productos/:id', async (req, res, next) => {
 /**
  * POST /api/admin/cambiar-contrasena
  *
- * FALLAS: sin token anti-CSRF, sin límite de intentos, y la contraseña nueva
- * se guarda en texto plano.
+ * CSRF: cubierto por el middleware global `verificarCsrf`.
+ *
+ * La contraseña nueva se valida y se guarda como hash bcrypt (el servicio se
+ * encarga de hashearla). El endpoint sólo lo alcanza un admin con sesión.
  */
 router.post('/cambiar-contrasena', async (req, res, next) => {
   try {
-    const { nueva } = req.body || {};
-    if (!nueva) {
-      return res.status(400).json({ error: 'Falta la contraseña nueva.' });
-    }
-    // FALLA: no se valida la longitud ni la complejidad de la contraseña.
     // (`req.usuario!`: requiereSesion ya garantizó que hay un usuario.)
+    const nueva = texto(req.body?.nueva, 8, 200, 'contraseña nueva');
     const usuario = await usuarios.cambiarPassword(req.usuario!.id, nueva);
     res.json({ mensaje: 'Contraseña actualizada.', usuario });
   } catch (err) {
@@ -134,68 +162,87 @@ router.post('/cambiar-contrasena', async (req, res, next) => {
 /**
  * POST /api/admin/probar-conexion
  *
- * -----------------------------------------------------------------------------
- * FALLA — Inyección de comandos del sistema operativo (OWASP A03:2021)
- * -----------------------------------------------------------------------------
- * La dirección del proveedor se mete dentro de una cadena de shell.
- * Como `exec` launches /bin/sh -c, los operadores del shell (|, ;, &&, $())
- * se interpretan y permiten ejecutar comandos arbitrarios en el contenedor.
- *
- * Corrección: validar el host contra una LISTA BLANCA y ejecutar el proceso
- * con `spawn('ping', ['-c', '3', host], { shell: false })`, sin pasar por el
- * shell.
- * -----------------------------------------------------------------------------
+ * CMD-01/02/03: el host se valida contra una lista blanca y el ping se
+ * ejecuta con `spawn('ping', ['-c', '3', host], { shell: false })`, argumentos
+ * separados y sin interpolación en un shell.
  */
-router.post('/probar-conexion', (req, res) => {
-  const { host } = req.body || {};
+router.post('/probar-conexion', (req, res, next) => {
+  try {
+    const host = texto(req.body?.host, 1, 253, 'host');
 
-  // FALLA: entrada de usuario concatenada en un comando de shell.
-  const comando = `ping -c 3 ${host}`;
+    if (!HOSTS_PERMITIDOS.includes(host)) {
+      return res.status(400).json({
+        comando: 'ping',
+        salida: '',
+        error: 'Host no permitido.',
+      });
+    }
 
-  exec(comando, (error, stdout, stderr) => {
-    res.json({
-      comando,
-      salida: stdout,
-      error: stderr || (error ? error.message : null),
+    // CMD-02: nunca concatenar la entrada del usuario en un comando
+    const proceso = spawn('ping', ['-c', '3', host], { shell: false });
+    let salida = '';
+    let error = '';
+
+    proceso.stdout.on('data', (datos: Buffer) => {
+      salida += datos.toString();
     });
-  });
+    proceso.stderr.on('data', (datos: Buffer) => {
+      error += datos.toString();
+    });
+    proceso.on('error', (err) => {
+      if (!res.headersSent) {
+        res.status(500).json({ comando: `ping -c 3 ${host}`, salida, error: err.message });
+      }
+    });
+    proceso.on('close', (codigo) => {
+      if (res.headersSent) return;
+      res.json({
+        comando: `ping -c 3 ${host}`,
+        salida,
+        error: error || (codigo === 0 ? null : `ping terminó con código ${codigo}.`),
+      });
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /**
  * POST /api/admin/subir-archivo
  *
- * -----------------------------------------------------------------------------
- * FALLA — Carga de archivos sin restricciones (OWASP A04:2021)
- * -----------------------------------------------------------------------------
- * No se valida la extensión, el tipo MIME ni el tamaño del archivo, y se
- * guarda con el nombre que manda el cliente (además sin sanitizar "../", lo
- * que permite escribir fuera de la carpeta de subidas). Los archivos subidos
- * se sirven con express.static desde el mismo origen.
- *
- * Corrección: validar extensión contra lista blanca (.png/.jpg/.svg saneado),
- * verificar el tipo MIME real, limitar el tamaño, generar un nombre aleatorio
- * y guardar fuera del árbol web.
- * -----------------------------------------------------------------------------
+ * Práctica 4: lista blanca de extensiones de imagen, comprobación del tipo
+ * MIME real por magic number, límite de tamaño y nombre generado en el
+ * servidor. El nombre del cliente nunca decide la ruta de escritura.
  */
 router.post('/subir-archivo', express.json({ limit: '8mb' }), (req, res, next) => {
   try {
-    const { nombre, contenidoBase64 } = req.body || {};
+    const nombre = texto(req.body?.nombre, 1, 200, 'nombre');
+    const contenidoBase64 = texto(req.body?.contenidoBase64, 1, 11_000_000, 'contenidoBase64');
 
-    if (!nombre || !contenidoBase64) {
-      return res.status(400).json({ error: 'Falta el archivo.' });
+    // Sólo el nombre base: se descarta cualquier "../" que viniera del cliente.
+    const extension = validarExtension(
+      path.extname(path.basename(nombre)),
+      EXTENSIONES_IMAGEN
+    );
+    const buffer = Buffer.from(contenidoBase64, 'base64');
+    validarTamaño(buffer.length, TAMANO_MAXIMO);
+    validarMagicNumber(buffer, MIME_IMAGENES);
+
+    // Defensa en profundidad: aunque el nombre viniera saneado, verificamos
+    // que el destino resuelto siga dentro de uploads/.
+    const archivo = nombreArchivoSeguro(extension);
+    const raiz = path.resolve(config.uploadsDir) + path.sep;
+    const destino = path.resolve(config.uploadsDir, archivo);
+    if (!destino.startsWith(raiz)) {
+      throw new ErrorValidacion('Ruta de destino no permitida.');
     }
 
-    // FALLA: sin validación de extensión, MIME ni tamaño.
-    const buffer = Buffer.from(contenidoBase64, 'base64');
     fs.mkdirSync(config.uploadsDir, { recursive: true });
-
-    // FALLA: nombre tomado del cliente sin sanear (path traversal).
-    const destino = path.join(config.uploadsDir, nombre);
     fs.writeFileSync(destino, buffer);
 
     res.json({
       mensaje: 'Archivo subido.',
-      url: `/uploads/${nombre}`,
+      url: `/uploads/${archivo}`,
       bytes: buffer.length,
     });
   } catch (err) {

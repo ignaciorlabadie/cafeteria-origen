@@ -1,28 +1,21 @@
+import bcrypt from 'bcryptjs';
+
 import * as db from '../db';
 import type { Usuario } from '../tipos';
 
+const RONDAS = 12;
+
 /**
- * Servicio de usuarios.
- *
- * -----------------------------------------------------------------------------
- * FALLA — Inyección SQL (OWASP A03:2021)
- * -----------------------------------------------------------------------------
- * La consulta del login concatena el usuario y la contraseña directamente
- * dentro del texto SQL. El motor de PostgreSQL interpreta las comillas y los
- * operadores que venga en la entrada, de modo que la condición se puede
- * reescribir por completo y devolver una fila válida sin conocer la clave.
- *
- * Además:
- *  - La contraseña se compara en texto plano (almacenamiento inseguro).
- *  - El mensaje de error distingue "usuario inexistente" de "contraseña
- *    incorrecta" (enumeración de usuarios).
- *  - No hay límite de intentos (fuerza bruta).
- *
- * Corrección: consultas parametrizadas (`WHERE username = $1 AND password = $2`
- * con bcrypt.compare), mensaje genérico de error, y rate limiting + bloqueo
- * temporal en el endpoint de login.
- * -----------------------------------------------------------------------------
+ * Hash fijo para comparar cuando el usuario no existe. Sin esto, un login con
+ * usuario inexistente responde mucho antes que uno con contraseña incorrecta
+ * y permite enumerar usuarios por timing (aunque el mensaje sea genérico).
  */
+const HASH_SEÑUELO = bcrypt.hashSync('usuario-inexistente', 10);
+
+/** Hashea una contraseña con salt antes de guardarla. */
+export async function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, RONDAS);
+}
 
 /** Busca un usuario por nombre de usuario exacto (query parametrizada). */
 export async function buscarPorUsername(username: string): Promise<Usuario | null> {
@@ -34,14 +27,17 @@ export async function buscarPorUsername(username: string): Promise<Usuario | nul
 }
 
 /**
- * Autentica a un usuario comparando usuario y contraseña.
- * Devuelve el usuario o null.
+ * Autentica comparando la contraseña con el hash guardado (nunca en claro).
+ * Siempre se ejecuta un bcrypt.compare, incluso si el usuario no existe.
  */
 export async function autenticar(username: string, password: string): Promise<Usuario | null> {
-  // FALLA: inyección SQL — la entrada del usuario se concatena en la consulta.
-  const sql = `SELECT * FROM usuarios WHERE username = '${username}' AND password = '${password}'`;
-  const { rows } = await db.query<Usuario>(sql);
-  return rows[0] || null;
+  const { rows } = await db.query<Usuario>(
+    'SELECT * FROM usuarios WHERE username = $1',
+    [username]
+  );
+  const usuario = rows[0] || null;
+  const coincide = await bcrypt.compare(password, usuario ? usuario.password : HASH_SEÑUELO);
+  return usuario && coincide ? usuario : null;
 }
 
 /** Lista todos los usuarios (para el panel de administración). */
@@ -50,34 +46,39 @@ export async function listar(): Promise<Usuario[]> {
   return rows;
 }
 
-/**
- * Actualiza un usuario.
- * FALLA — Asignación masiva / escalada de privilegios: se actualiza el rol
- * sin verificar que quien llama tenga permiso para hacerlo.
- */
 export async function actualizar(id: number | string, cambios: Partial<Usuario>): Promise<Usuario | null> {
-  const campos: string[] = [];
-  const valores: unknown[] = [];
-  let i = 1;
-  for (const [campo, valor] of Object.entries(cambios)) {
-    campos.push(`${campo} = $${i}`);
-    valores.push(valor);
-    i += 1;
-  }
-  if (campos.length === 0) return null;
-  valores.push(id);
+  const permitidos = ['username', 'nombre', 'rol', 'password'];
+  const claves = Object.keys(cambios).filter((campo) => permitidos.includes(campo));
+  if (claves.length === 0) return null;
+
+  // Nunca se guarda la contraseña que mandó el cliente: siempre su hash.
+  const passwordHash = cambios.password === undefined ? null : await hashPassword(cambios.password);
+
   const { rows } = await db.query<Usuario>(
-    `UPDATE usuarios SET ${campos.join(', ')} WHERE id = $${i} RETURNING *`,
-    valores
+    `UPDATE usuarios
+        SET username = COALESCE($1, username),
+            nombre = COALESCE($2, nombre),
+            rol = COALESCE($3, rol),
+            password = COALESCE($4, password)
+      WHERE id = $5
+      RETURNING *`,
+    [
+      cambios.username ?? null,
+      cambios.nombre ?? null,
+      cambios.rol ?? null,
+      passwordHash,
+      id,
+    ]
   );
   return rows[0] || null;
 }
 
-/** Cambia la contraseña de un usuario (se guarda en texto plano). */
+/** Cambia la contraseña de un usuario guardando su hash con salt. */
 export async function cambiarPassword(id: number, nuevaPassword: string): Promise<Usuario | null> {
+  const hash = await hashPassword(nuevaPassword);
   const { rows } = await db.query<Usuario>(
     'UPDATE usuarios SET password = $1 WHERE id = $2 RETURNING *',
-    [nuevaPassword, id]
+    [hash, id]
   );
   return rows[0] || null;
 }

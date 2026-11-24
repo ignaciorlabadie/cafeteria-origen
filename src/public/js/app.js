@@ -1,11 +1,16 @@
 /* =============================================================================
    Cafetería Origen — lógica del sitio público
+
+   XSS: los datos que vienen de la API, de la URL o del localStorage se insertan
+   siempre como TEXTO (textContent / createTextNode / createElement). No se
+   construye HTML con valores que pueda controlar un usuario.
    ============================================================================= */
 (function () {
   'use strict';
 
   var API = '/api';
   var CARRITO_KEY = 'origen.carrito';
+  var csrfToken = '';
 
   var estado = {
     tipo: '',
@@ -17,22 +22,49 @@
   /* ---------------------------------------------------------------- utils */
   function $(sel) { return document.querySelector(sel); }
 
+  function txt(valor) {
+    return valor == null ? '' : String(valor);
+  }
+
+  function elemento(etiqueta, clase, texto) {
+    var el = document.createElement(etiqueta);
+    if (clase) el.className = clase;
+    if (texto !== undefined) el.textContent = txt(texto);
+    return el;
+  }
+
+  function vaciar(nodo) {
+    while (nodo.firstChild) nodo.removeChild(nodo.firstChild);
+  }
+
   function money(valor) {
     var n = Number(valor || 0);
     return n.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' });
   }
 
-  function raw(valor) {
-    // FALLA: esta función NO escapa nada, devuelve el valor tal cual.
-    // La forma correcta de renderizar texto del servidor es escaparHtml()
-    // (o textContent en vez de innerHTML).
-    return String(valor == null ? '' : valor);
+  function cargarCsrf() {
+    return fetch(API + '/csrf-token', { credentials: 'same-origin' })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        csrfToken = data.token || data.csrfToken || '';
+        return csrfToken;
+      })
+      .catch(function () { return ''; });
   }
 
   function api(url, opciones) {
-    return fetch(API + url, opciones).then(function (res) {
-      return res.json().catch(function () { return {}; }).then(function (data) {
-        return { ok: res.ok, status: res.status, data: data };
+    var opts = opciones || {};
+    var metodo = (opts.method || 'GET').toUpperCase();
+    var esEscritura = ['POST', 'PUT', 'PATCH', 'DELETE'].indexOf(metodo) !== -1;
+    var listo = !esEscritura || csrfToken ? Promise.resolve() : cargarCsrf();
+
+    return listo.then(function () {
+      var headers = Object.assign({}, opts.headers || {});
+      if (esEscritura && csrfToken) headers['X-CSRF-Token'] = csrfToken;
+      return fetch(API + url, Object.assign({}, opts, { headers: headers })).then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          return { ok: res.ok, status: res.status, data: data };
+        });
       });
     });
   }
@@ -59,12 +91,6 @@
     }
   }
 
-  function escaparHtml(texto) {
-    var div = document.createElement('div');
-    div.textContent = texto == null ? '' : String(texto);
-    return div.innerHTML;
-  }
-
   /* ------------------------------------------------------------- catálogo */
   function urlCatalogo() {
     var params = new URLSearchParams();
@@ -88,53 +114,60 @@
 
   function renderProductos(productos) {
     var grid = $('#productos-grid');
+    vaciar(grid);
 
     if (!productos || productos.length === 0) {
-      grid.innerHTML = '<p class="empty">No encontramos productos con esos filtros.</p>';
+      grid.appendChild(elemento('p', 'empty', 'No encontramos productos con esos filtros.'));
       return;
     }
 
-    // ---------------------------------------------------------------
-    // FALLA (XSS reflejado / almacenado): el HTML se construye con
-    // innerHTML a partir de datos que vienen del servidor (nombres de
-    // producto y texto de la búsqueda). Un "<script>" en el buscador o
-    // en el nombre de un producto se ejecuta en el navegador.
-    //
-    // Corrección: usar textContent, o escapar los valores antes de
-    // interpolarlos (ver la función escaparHtml de arriba).
-    // ---------------------------------------------------------------
-    grid.innerHTML = productos.map(function (p) {
+    productos.forEach(function (p) {
       window.__productos[p.id] = p;
-      var tags = '<span class="tag">' + raw(p.tipo) + '</span>';
-      if (p.variedad) tags += '<span class="tag tag-origen">' + raw(p.variedad) + '</span>';
-      if (p.tamano) tags += '<span class="tag">' + raw(p.tamano) + '</span>';
 
-      return '' +
-        '<article class="product-card">' +
-        '  <div class="product-top">' +
-        '    <h3 class="product-name">' + raw(p.nombre) + '</h3>' +
-        '    <span class="product-price">' + money(p.precio) + '</span>' +
-        '  </div>' +
-        '  <div class="product-tags">' + tags + '</div>' +
-        '  <p class="product-desc">' + raw(p.descripcion) + '</p>' +
-        '  <button class="btn btn-ghost btn-agregar" data-id="' + raw(p.id) + '">Agregar</button>' +
-        '</article>';
-    }).join('');
+      var tarjeta = elemento('article', 'product-card');
+
+      var top = elemento('div', 'product-top');
+      top.appendChild(elemento('h3', 'product-name', p.nombre));
+      top.appendChild(elemento('span', 'product-price', money(p.precio)));
+      tarjeta.appendChild(top);
+
+      var tags = elemento('div', 'product-tags');
+      tags.appendChild(elemento('span', 'tag', p.tipo));
+      if (p.variedad) tags.appendChild(elemento('span', 'tag tag-origen', p.variedad));
+      if (p.tamano) tags.appendChild(elemento('span', 'tag', p.tamano));
+      tarjeta.appendChild(tags);
+
+      tarjeta.appendChild(elemento('p', 'product-desc', p.descripcion));
+
+      var agregar = elemento('button', 'btn btn-ghost btn-agregar', 'Agregar');
+      agregar.setAttribute('data-id', txt(p.id));
+      tarjeta.appendChild(agregar);
+
+      grid.appendChild(tarjeta);
+    });
   }
 
   function renderResultado(filtros, total) {
     var el = $('#resultado-busqueda');
+    vaciar(el);
 
-    // FALLA (XSS reflejado): se interpola el texto buscado con innerHTML.
     if (filtros && filtros.q) {
-      el.innerHTML = 'Resultados para <strong>' + filtros.q + '</strong> — ' + total + ' producto(s)';
+      el.appendChild(document.createTextNode('Resultados para '));
+      el.appendChild(elemento('strong', '', filtros.q));
+      el.appendChild(document.createTextNode(' — ' + txt(total) + ' producto(s)'));
     } else {
-      el.textContent = total + ' producto(s) en el menú';
+      el.textContent = txt(total) + ' producto(s) en el menú';
     }
   }
 
   function renderErrorProductos(mensaje) {
-    $('#productos-grid').innerHTML = '<p class="empty">No se pudo cargar el menú: ' + (mensaje || 'error desconocido') + '</p>';
+    var grid = $('#productos-grid');
+    vaciar(grid);
+    grid.appendChild(elemento(
+      'p',
+      'empty',
+      'No se pudo cargar el menú: ' + (mensaje || 'error desconocido')
+    ));
   }
 
   /* --------------------------------------------------------------- carrito */
@@ -172,43 +205,61 @@
     renderCarrito();
   }
 
+  function botonCantidad(accion, indice, etiqueta) {
+    var btn = elemento('button', '', etiqueta);
+    btn.type = 'button';
+    btn.setAttribute('data-acc', accion);
+    btn.setAttribute('data-i', txt(indice));
+    return btn;
+  }
+
   function renderCarrito() {
     var cont = $('#carrito');
     var lista = $('#resumen-carrito');
     var total = 0;
 
+    vaciar(cont);
+    vaciar(lista);
+
     if (estado.carrito.length === 0) {
-      cont.innerHTML = '<p class="empty">El carrito está vacío.</p>';
-      lista.innerHTML = '';
+      cont.appendChild(elemento('p', 'empty', 'El carrito está vacío.'));
       $('#resumen-total').textContent = money(0);
       return;
     }
 
-    cont.innerHTML = estado.carrito.map(function (item, i) {
+    estado.carrito.forEach(function (item, i) {
       var subtotal = item.precio * item.cantidad;
       total += subtotal;
-      return '' +
-        '<div class="cart-item">' +
-        '  <div>' +
-        '    <div class="cart-item-name">' + raw(item.nombre) + '</div>' +
-        '    <div class="cart-item-meta">' + money(item.precio) + ' c/u</div>' +
-        '  </div>' +
-        '  <div class="qty-control">' +
-        '    <button type="button" data-acc="menos" data-i="' + i + '">&minus;</button>' +
-        '    <span>' + item.cantidad + '</span>' +
-        '    <button type="button" data-acc="mas" data-i="' + i + '">+</button>' +
-        '  </div>' +
-        '  <div>' +
-        '    <div class="cart-item-price">' + money(subtotal) + '</div>' +
-        '    <button type="button" class="link-danger" data-acc="quitar" data-i="' + i + '">Quitar</button>' +
-        '  </div>' +
-        '</div>';
-    }).join('');
 
-    lista.innerHTML = estado.carrito.map(function (item) {
-      return '<li><span>' + raw(item.nombre) + ' × ' + item.cantidad + '</span><span>' +
-        money(item.precio * item.cantidad) + '</span></li>';
-    }).join('');
+      var fila = elemento('div', 'cart-item');
+
+      var datos = elemento('div');
+      datos.appendChild(elemento('div', 'cart-item-name', item.nombre));
+      datos.appendChild(elemento('div', 'cart-item-meta', money(item.precio) + ' c/u'));
+      fila.appendChild(datos);
+
+      var cantidad = elemento('div', 'qty-control');
+      cantidad.appendChild(botonCantidad('menos', i, '\u2212'));
+      cantidad.appendChild(elemento('span', '', item.cantidad));
+      cantidad.appendChild(botonCantidad('mas', i, '+'));
+      fila.appendChild(cantidad);
+
+      var derecha = elemento('div');
+      derecha.appendChild(elemento('div', 'cart-item-price', money(subtotal)));
+      var quitar = elemento('button', 'link-danger', 'Quitar');
+      quitar.type = 'button';
+      quitar.setAttribute('data-acc', 'quitar');
+      quitar.setAttribute('data-i', txt(i));
+      derecha.appendChild(quitar);
+      fila.appendChild(derecha);
+
+      cont.appendChild(fila);
+
+      var li = document.createElement('li');
+      li.appendChild(elemento('span', '', txt(item.nombre) + ' × ' + txt(item.cantidad)));
+      li.appendChild(elemento('span', '', money(item.precio * item.cantidad)));
+      lista.appendChild(li);
+    });
 
     $('#resumen-total').textContent = money(total);
   }
@@ -228,9 +279,9 @@
       }),
     }).then(function (resp) {
       if (!resp.ok) {
-        // FALLA (XSS reflejado): el mensaje del servidor se pinta con innerHTML.
         feedback.className = 'form-feedback is-error';
-        feedback.innerHTML = 'No pudimos enviar el pedido: ' + (resp.data.error || 'error desconocido');
+        feedback.textContent = 'No pudimos enviar el pedido: ' +
+          (resp.data.error || 'error desconocido');
         return;
       }
       feedback.className = 'form-feedback is-ok';
@@ -250,25 +301,25 @@
   function cargarReseñas() {
     return api('/comentarios').then(function (resp) {
       var cont = $('#lista-resenas');
+      vaciar(cont);
+
       if (!resp.ok || !resp.data.comentarios || resp.data.comentarios.length === 0) {
-        cont.innerHTML = '<p class="empty">Todavía no hay reseñas. ¡Sé el primero!</p>';
+        cont.appendChild(elemento('p', 'empty', 'Todavía no hay reseñas. ¡Sé el primero!'));
         return;
       }
-      // FALLA (XSS almacenado): el texto de la reseña viene de la base y se
-      // inyecta con innerHTML → se ejecuta en el navegador de cada visitante.
-      cont.innerHTML = resp.data.comentarios.map(function (c) {
+
+      resp.data.comentarios.forEach(function (c) {
         var estrellas = '';
-        var i;
-        for (i = 0; i < Number(c.calificacion || 0); i++) estrellas += '★';
-        return '' +
-          '<article class="review">' +
-          '  <div class="review-head">' +
-          '    <span class="review-author">' + raw(c.autor) + '</span>' +
-          '    <span class="review-stars">' + estrellas + '</span>' +
-          '  </div>' +
-          '  <p class="review-text">' + raw(c.texto) + '</p>' +
-          '</article>';
-      }).join('');
+        for (var i = 0; i < Number(c.calificacion || 0); i++) estrellas += '★';
+
+        var reseña = elemento('article', 'review');
+        var head = elemento('div', 'review-head');
+        head.appendChild(elemento('span', 'review-author', c.autor));
+        head.appendChild(elemento('span', 'review-stars', estrellas));
+        reseña.appendChild(head);
+        reseña.appendChild(elemento('p', 'review-text', c.texto));
+        cont.appendChild(reseña);
+      });
     });
   }
 
@@ -285,7 +336,7 @@
     }).then(function (resp) {
       if (!resp.ok) {
         feedback.className = 'form-feedback is-error';
-        feedback.innerHTML = 'No se pudo publicar: ' + (resp.data.error || 'error desconocido');
+        feedback.textContent = 'No se pudo publicar: ' + (resp.data.error || 'error desconocido');
         return;
       }
       feedback.className = 'form-feedback is-ok';
