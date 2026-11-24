@@ -363,7 +363,7 @@ Resultado final de la práctica: `check:security` **20/37** controles críticos 
 ## VUL-27 · Secretos y credenciales escritos en el código
 
 - **Qué es y por qué importa:** `src/config.ts` tenía `sessionSecret: 'origen-cafe-2024'`, `DB_USER || 'postgres'`, `DB_PASSWORD || 'postgres'` y un bloque `credencialesPorDefecto`. Cualquiera con acceso al repositorio conocía el secreto de firma y las credenciales de la base.
-- **Cómo se corrige:** todo se lee de `process.env`. En `development`, si falta `SESSION_SECRET`, se genera un valor efímero con `randomBytes(32)`; en `production`, la ausencia del secreto (o de `DB_USER`/`DB_PASSWORD`) produce un error de arranque: falla rápido, no arranca con secretos débiles. `DB_USER` no tiene valor fijo en el código: `origen_app` queda sólo en `.env.example` y en `docker-compose.yml`, donde además se agregó `SESSION_SECRET: "${SESSION_SECRET:-}"`. Se eliminó `credencialesPorDefecto`.
+- **Cómo se corrige:** todo se lee de `process.env`. En `development`, si falta `SESSION_SECRET`, se genera un valor efímero con `randomBytes(32)`; en `production`, la ausencia del secreto (o de `DB_USER`/`DB_PASSWORD`) produce un error de arranque: falla rápido, no arranca con secretos débiles. `DB_USER` no tiene valor fijo en el código: `origen_app` queda sólo en `.env.example` y en la configuración de despliegue. `docker-compose.yml` **no se modificó** según la consigna; el secreto se inyecta por entorno cuando hace falta. Se eliminó `credencialesPorDefecto`.
 - **Cómo se verifica:** `npm run check:security` → `✔ CFG-02` y `✔ SQLI-05`. `git grep -n "sessionSecret: '\|origen-cafe" src/config.ts` no devuelve resultados.
 
 ## CFG-05 · Contenedor ejecutado como usuario no root
