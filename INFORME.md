@@ -147,7 +147,7 @@
   ```
 
   Ya no queda ninguna asignación a `.innerHTML` en `src/public/js/`.
-- **Cómo se verifica:** `npm run test:seguridad` → bloque *Cross-Site Scripting* 3/3 en verde; `npm run check:security` → `✔ XSS-01`, `✔ XSS-02`. Además, con el login `<img src=x onerror=alert(1)>` la respuesta JSON no contiene `<img`.
+- **Cómo se verifica:** `npm run test:seguridad` → bloque *Cross-Site Scripting* 3/3 en verde; `npm run check:security` → `✔ XSS-01`, `✔ XSS-02`. Además, con el login `<img src=x onerror=alert(1)>` la respuesta JSON no contiene `<img>`.
 
 ## VUL-06 · Cross-Site Scripting almacenado en las reseñas
 
@@ -189,6 +189,8 @@
 
 - **Qué es y por qué importa:** es una segunda línea de defensa: aunque algún dato se pinte como HTML por error, el navegador no ejecuta scripts inline ni `eval`.
 - **Dónde está (versión original):** `src/app.ts` no configuraba `helmet` ni `contentSecurityPolicy`.
+- **Cómo se observa:** `curl -I http://localhost:8080/` no mostraba `Content-Security-Policy`.
+- **Por qué ocurre:** Express no agrega cabeceras de seguridad por defecto; sin CSP, un XSS que escapara a la validación podía ejecutar scripts inline.
 - **Cómo se corrige:** en `src/app.ts`:
 
   ```ts
@@ -328,6 +330,8 @@ Un detalle que se corrigió al iniciar la Práctica 4: el middleware global devo
 
 - **Qué es y por qué importa:** los parámetros `:id` llegaban como texto a los servicios y se usaban directamente en consultas parametrizadas. Aunque no había inyección SQL, valores como `abc` o `1;DROP` llegaban hasta la base y provocaban errores 500 o respuestas engañosas.
 - **Dónde está:** `src/routes/productos.routes.ts:53`, `src/routes/pedidos.routes.ts:50,66`, `src/routes/comentarios.routes.ts:46` y `src/routes/admin.routes.ts:58,85,102` (versión original).
+- **Cómo se observa:** `GET /api/productos/abc` respondía 500 en vez de 400.
+- **Por qué ocurre:** `Number(req.params.id)` devolvía `NaN` y ese valor llegaba a los servicios sin comprobación.
 - **Por qué no se había detectado:** `check:security` daba `✔ VAL-01` porque `Number.isInteger` aparecía dentro de `src/validacion.ts`, pero **ninguna ruta lo usaba**. Era un falso verde del análisis estático.
 - **Cómo se corrige:** `idEntero()` (entero positivo, `1..Number.MAX_SAFE_INTEGER`) se aplica en los siete puntos antes de llamar al servicio.
 - **Cómo se verifica:** `npm run check:security` → `✔ VAL-01`, ahora por código ejecutado en las rutas; un `GET /api/productos/abc` responde 400 en vez de 500.
@@ -335,6 +339,9 @@ Un detalle que se corrigió al iniciar la Práctica 4: el middleware global devo
 ## VUL-14 · Stack trace filtrado al cliente
 
 - **Qué es y por qué importa:** `src/middleware/errores.ts` respondía `{ error: err.message, stack: err.stack }`. La traza revela rutas internas, nombres de archivos, consultas SQL y versiones de librerías.
+- **Dónde está:** `src/middleware/errores.ts:30` (versión original): `res.status(500).json({ error: err.message, stack: err.stack })`.
+- **Cómo se observa:** una ruta inexistente o un id inválido devolvía un JSON con `stack` y rutas internas como `/app/src/...`.
+- **Por qué ocurre:** el middleware enviaba el objeto `Error` completo al cliente en lugar de registrar los detalles y responder con un mensaje fijo.
 - **Cómo se corrige:** los 4xx devuelven el mensaje de validación; los 5xx responden `{"error":"Error interno del servidor."}`. El objeto completo (con su traza) se registra con `console.error` en el servidor, nunca en la respuesta HTTP.
 - **Cómo se verifica:** `npm run test:seguridad` → `✔ la API NO devuelve stack traces al cliente`; `check:security` → `✔ VAL-06`.
 - **Equivalencia con la planilla del grupo:** este control corresponde a **VUL-24** (*Stack traces enviados al cliente*) en `VULNERABILIDADES.md`; en este informe se numeró VUL-14 por el orden de la práctica 4.
@@ -362,6 +369,8 @@ Resultado al cerrar la práctica 4: `check:security` **20/37**, *Validación de 
 
 - **Qué es y por qué importa:** el id era `sesion_1`, `sesion_2`... Un atacante puede probar valores y usurpar la sesión de otro usuario. Además, al hacer login no se descartaba una sesión previa, lo que permite *fijación de sesión*: inducir al victim a entrar con un `sid` conocido por el atacante.
 - **Dónde está:** `src/middleware/sesion.ts:31,50-53` (versión original): `contadorSesiones += 1; const id = \`sesion_${contadorSesiones}\`;`.
+- **Cómo se observa:** dos logins seguidos daban `sid=sesion_1` y `sid=sesion_2`.
+- **Por qué ocurre:** el generador usaba un contador en memoria y el login no descartaba una sesión previa, lo que además permitía fijación de sesión.
 - **Cómo se corrige:** `randomBytes(32).toString('hex')` (64 caracteres) y `destruirSesion(req)` justo antes de `crearSesion()` en el login, para que la cookie impuesta por un tercero deje de existir.
 - **Cómo se verifica:** `✔ el identificador de sesión es aleatorio y no predecible` (tres logins seguidos dan tres ids distintos); `✔ AUTH-07`, `✔ AUTH-08`.
 
@@ -369,6 +378,8 @@ Resultado al cerrar la práctica 4: `check:security` **20/37**, *Validación de 
 
 - **Qué es y por qué importa:** sin `HttpOnly`, cualquier XSS lee el `sid`; sin `Secure`, la cookie viaja en texto plano; sin vencimiento, una cookie robada sirve para siempre. El logout original sólo borraba la cookie del navegador: la sesión seguía viva en el servidor.
 - **Dónde está:** `src/middleware/sesion.ts:69-70` y `src/routes/auth.routes.ts:62-65` (versión original).
+- **Cómo se observa:** el `Set-Cookie` no llevaba `HttpOnly`/`Secure`/`SameSite`, y después del logout el `sid` antiguo seguía vivo en el servidor.
+- **Por qué ocurre:** la cookie se escribía con opciones por defecto y el `Map` de sesiones no se limpiaba al cerrar sesión.
 - **Cómo se corrige:** la cookie `sid` lleva `HttpOnly`, `SameSite=Lax`, `Secure` cuando `NODE_ENV=production` y `Max-Age=900`. La sesión vence por inactividad (15 min) y por vida máxima (8 h); cada acceso renueva el TTL sin superar el límite absoluto. El logout llama a `destruirSesion(req)`, borra la entrada del `Map` y limpia las cookies. La cookie `csrf` sigue legible por JS porque el cliente debe reenviarla.
 - **Cómo se verifica:** `✔ la cookie de sesión lleva HttpOnly, Secure y SameSite` y `✔ el logout invalida la sesión en el servidor`; `✔ AUTH-05`, `✔ AUTH-06`, `✔ AUTH-09`, `✔ AUTH-10`, `✔ AUTH-11`. En vivo, el `Set-Cookie` muestra `sid=<64 hex>; Max-Age=900; HttpOnly; SameSite=Lax`.
 
@@ -376,6 +387,8 @@ Resultado al cerrar la práctica 4: `check:security` **20/37**, *Validación de 
 
 - **Qué es y por qué importa:** se podían probar contraseñas sin límite. Los mensajes ya eran genéricos, pero el tiempo de respuesta distinto entre "usuario inexistente" y "contraseña incorrecta" permitía enumerar cuentas por *timing*.
 - **Dónde está:** `src/routes/auth.routes.ts:18-54` (versión original): no había middleware de límite.
+- **Cómo se observa:** probando varias veces a mano no había bloqueo; un usuario inexistente respondía distinto que uno existente con clave incorrecta, y el tiempo también variaba.
+- **Por qué ocurre:** no existía límite de intentos y el código buscaba el usuario antes de comparar un hash, lo que cambiaba el tiempo de respuesta.
 - **Cómo se corrige:** dos capas con `express-rate-limit`: 5 intentos fallidos por IP y 5 por cuenta en 15 minutos (429). `skipSuccessfulRequests: true` evita que los logins correctos consuman el cupo. Para igualar tiempos, cuando el usuario no existe se comparte la contraseña con un hash bcrypt señuelo.
 - **Cómo se verifica:** `✔ el login bloquea o limita los intentos repetidos` y `✔ el login correcto sigue funcionando después de un bloqueo` (2/2 del bloque *Fuerza bruta*); `✔ AUTH-04`, `✔ AUTH-12`.
 
@@ -383,12 +396,17 @@ Resultado al cerrar la práctica 4: `check:security` **20/37**, *Validación de 
 
 - **Qué es y por qué importa:** cualquier usuario autenticado, incluso con rol `cliente`, entraba al panel y podía crear/borrar productos, cambiar contraseñas, cambiar roles y ejecutar comandos en el servidor.
 - **Dónde está:** `src/routes/admin.routes.ts:49`: estaba importado `requiereRol` pero no se usaba; `PUT /usuarios/:id` aceptaba `rol` del cuerpo sin verificar quién lo mandaba.
+- **Cómo se observa:** con `cliente/cliente` se abría `/admin.html` y `PUT /api/admin/usuarios/:id` aceptaba `{"rol":"admin"}`.
+- **Por qué ocurre:** el router exigía sesión pero no rol, y el cuerpo se copiaba a `cambios` sin lista blanca ni verificación del usuario autenticado.
 - **Cómo se corrige:** `router.use(requiereRol('admin'))` para todo el panel y, además, `if (!req.usuario || req.usuario.rol !== 'admin')` antes de aceptar un cambio de `rol`, con lista blanca `admin|barista|mozo|cliente`. Contraseñas y nombres se validan con los helpers de la Práctica 4.
 - **Cómo se verifica:** `✔ un usuario sin rol admin NO puede entrar al panel` y `✔ un usuario NO puede cambiar su propio rol a admin`; `✔ AUTH-14`, `✔ AUTH-15`. En vivo, un `cliente` recibe `403` en `GET /api/admin/usuarios`.
 
 ## VUL-20 · Credenciales triviales de fábrica
 
 - **Qué es y por qué importa:** `admin/admin` y `cliente/cliente` son las primeras combinaciones que prueba cualquier escáner. Estaban además en `src/config.ts` y en el propio `admin.html`.
+- **Dónde está:** `src/config.ts:36-39` y `src/inicializar.ts:23-48` (versión original); también el cartel de `src/public/admin.html`.
+- **Cómo se observa:** entrar al panel con `admin/admin` y `cliente/cliente`.
+- **Por qué ocurre:** la carga inicial fijaba contraseñas conocidas y la configuración las versionaba como valores por defecto.
 - **Cómo se corrige:** se eliminó `credencialesPorDefecto` de la configuración. La carga inicial lee `SEED_ADMIN_PASSWORD`, `SEED_CLIENTE_PASSWORD`, etc.; si no están definidas, genera una contraseña aleatoria por cuenta y la muestra **una sola vez** en el log del servidor. En la base ya existente se conservaron las contraseñas anteriores, pero hasheadas, para no romper la demo. El cartel del panel ya no publica contraseñas.
 - **Cómo se verifica:** `check:security` → `✔ AUTH-13` (control recomendado).
 
@@ -403,32 +421,70 @@ Resultado al cerrar la práctica 5: `check:security` **31/37**, *Autenticación*
 ## CMD-01/02/03 · Inyección de comandos
 
 - **Qué es y por qué importa:** `exec(\`ping -c 3 ${host}\`)` pasaba la entrada por `/bin/sh -c`; `;`, `&&` o `$()` ejecutaban comandos arbitrarios dentro del contenedor.
+- **Dónde está:** `src/routes/admin.routes.ts:171` (versión original): `exec(\`ping -c 3 ${host}\`)`.
+- **Cómo se observa:** en "Probar conexión", `127.0.0.1; cat /etc/hostname` devolvía el contenido del archivo junto con el ping.
+- **Por qué ocurre:** `exec` invoca `/bin/sh -c`, así que los operadores del shell se interpretan como parte del comando.
 - **Cómo se corrige:** `HOSTS_PERMITIDOS = ['127.0.0.1', 'proveedor.origen.com']` y `spawn('ping', ['-c', '3', host], { shell: false })`. Fuera de la lista: `400`.
 - **Cómo se verifica:** `check:security` → `✔ CMD-01`, `✔ CMD-02`, `✔ CMD-03` y `✔ AUTH-14`; `test:seguridad` → 2/2 en inyección de comandos. El payload `127.0.0.1; echo INYECCION_DETECTADA` ya no devuelve el marcador.
 
 ## VUL-23 · Diagnóstico sin autenticar y con `process.env` expuesto
 
 - **Qué es y por qué importa:** `GET /api/_diagnostico` devolvía `process.env` completo, incluida `DB_PASSWORD`, sin exigir sesión.
+- **Dónde está:** `src/routes/debug.routes.ts:17-28` (versión original).
+- **Cómo se observa:** `curl http://localhost:8080/api/_diagnostico` devolvía `DB_PASSWORD` y otras variables sin autenticación.
+- **Por qué ocurre:** el handler serializaba `process.env` y el router no aplicaba `requiereSesion` ni `requiereRol('admin')`.
 - **Cómo se corrige:** `router.use(requiereSesion, requiereRol('admin'))` y una respuesta sólo con `process.version`, `platform`, `arch`, `memoryUsage()`, `uptime()` y `pid`. El archivo se conserva porque el checklist lo busca.
 - **Cómo se verifica:** sin sesión responde `401`; con sesión admin, `200` y sin secretos. `✔ CFG-03`, `✔ CFG-04` y `✔ el endpoint de diagnóstico NO expone secretos`.
 
 ## VUL-25 · Cabeceras de seguridad y CSP
 
-- **Por qué importa:** reducen el impacto de XSS y de intentos de incrustar la app en un iframe ajeno. La CSP es la segunda capa, después de no usar `innerHTML` y de validar entradas.
+- **Qué es y por qué importa:** son cabeceras HTTP que reducen el impacto de XSS y de intentos de incrustar la app en un iframe ajeno. La CSP es la segunda capa, después de no usar `innerHTML` y de validar entradas.
+- **Dónde está:** `src/app.ts:26-27` (versión original), sin `helmet`.
+- **Cómo se observa:** `curl -I http://localhost:8080/` no mostraba `Content-Security-Policy` ni `X-Frame-Options`.
+- **Por qué ocurre:** Express no habilita estas cabeceras por defecto.
 - **Cómo se corrige:** `helmet({ contentSecurityPolicy: {...} })` en `src/app.ts`: `default-src 'self'`, `script-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'` e `img-src 'self' data:`. `upgradeInsecureRequests: null` porque la demo corre por HTTP en `localhost`.
 - **Cómo se verifica:** `✔ CFG-01`, `✔ XSS-03` y `✔ el sitio envía cabeceras de seguridad`.
 
 ## VUL-27 · Secretos y credenciales escritos en el código
 
 - **Qué es y por qué importa:** `src/config.ts` tenía `sessionSecret: 'origen-cafe-2024'`, `DB_USER`/`DB_PASSWORD || 'postgres'` y un bloque `credencialesPorDefecto`.
+- **Dónde está:** `src/config.ts` (versión original): `sessionSecret: 'origen-cafe-2024'`, `DB_USER`/`DB_PASSWORD || 'postgres'` y `credencialesPorDefecto`.
+- **Cómo se observa:** `git grep -n "sessionSecret: '\|postgres" src/config.ts` mostraba esos valores fijos.
+- **Por qué ocurre:** la configuración mezclaba valores de despliegue con el código fuente, así que cualquiera con acceso al repositorio conocía el secreto y las credenciales.
 - **Cómo se corrige:** todo se lee de `process.env`. En development, si falta `SESSION_SECRET`, se genera un valor efímero con `randomBytes(32)`; en production, su ausencia (o la de `DB_USER`/`DB_PASSWORD`) produce error de arranque. `DB_USER` no tiene valor fijo en el código: `origen_app` queda en `.env.example` y en el despliegue. `docker-compose.yml` no se modificó. Se eliminó `credencialesPorDefecto`.
 - **Cómo se verifica:** `✔ CFG-02` y `✔ SQLI-05`. `git grep -n "sessionSecret: '\|origen-cafe" src/config.ts` no devuelve resultados.
 
 ## CFG-05 · Contenedor ejecutado como usuario no root
 
-- **Estado:** aplicado: `RUN mkdir -p /app/uploads && chown -R node:node /app/uploads` y `USER node` en el `Dockerfile`.
-- **Por qué importa:** si la app se compromete, el proceso no corre con `uid=0`; además, `uploads/` sigue siendo escribible por `node`.
+- **Qué es y por qué importa:** el proceso de la aplicación corría con `uid=0`; si la app se compromete, el atacante hereda root dentro del contenedor.
+- **Dónde está:** `Dockerfile` (versión original), sin `USER node` ni `chown` de `/app/uploads`.
+- **Cómo se observa:** `docker compose exec app id` devolvía `uid=0(root)`.
+- **Por qué ocurre:** la imagen de Node corre como root por defecto y el directorio de subidas pertenecía a root.
+- **Cómo se corrige:** `RUN mkdir -p /app/uploads && chown -R node:node /app/uploads` y `USER node` en el `Dockerfile`.
 - **Cómo se verifica:** `docker compose exec app id` → `uid=1000(node) gid=1000(node) groups=1000(node)`. La subida de archivos sigue pasando. Era un control recomendado y quedó cubierto.
+
+## Mapa de numeración entre `INFORME.md` y `VULNERABILIDADES.md`
+
+El informe usa la numeración en que se trabajaron las prácticas; el catálogo usa otra. Equivalencias que no son 1:1:
+
+| `VULNERABILIDADES.md` | `INFORME.md` |
+|---|---|
+| VUL-05, VUL-06 | VUL-05 |
+| VUL-07 | VUL-06 |
+| VUL-08 | VUL-07 |
+| VUL-09 | VUL-08 |
+| VUL-13 | VUL-15 |
+| VUL-14 | VUL-18 |
+| VUL-15, VUL-17, VUL-18 | VUL-17 |
+| VUL-16 | VUL-16 |
+| VUL-19 | VUL-18 |
+| VUL-20, VUL-21 | VUL-19 |
+| VUL-22 | CMD-01/02/03 |
+| VUL-24 | VUL-14 |
+| VUL-25 | VUL-25 y VUL-23 (parcial) |
+| VUL-27 | VUL-20 y VUL-27 |
+
+El resto (`VUL-01..04`, `VUL-10..12`, `VUL-23`, `VUL-26`) coincide.
 
 ## Integración y verificación final
 
