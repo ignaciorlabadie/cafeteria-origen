@@ -18,8 +18,8 @@ const app = express();
 /**
  * Cabeceras de seguridad. La CSP es una capa extra frente al XSS: incluso si
  * algún dato llega a pintarse como HTML, el navegador no ejecuta scripts
- * inline ni eval. Quedan pendientes el rate limiting, CORS y el limite de
- * tamaño por ruta para las practicas que siguen.
+ * inline ni eval. El rate limiting del login se agregó en la Práctica 5;
+ * quedan pendientes CORS y el límite de tamaño por ruta.
  */
 app.use(
   helmet({
