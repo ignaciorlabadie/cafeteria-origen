@@ -345,7 +345,60 @@ La regla es la misma que en XSS: no confiar en el cliente. El `type="number"` de
 
 Dos aprendizajes del estado inicial de esta práctica: un checklist estático puede pintar un control en verde por la palabra clave equivocada (VAL‑01) y un test puede pasar por un `403` que no tiene nada que ver con lo que dice (los tres tests de validación con CSRF global). Por eso conviene mirar también los logs de la batería, no sólo el ✔. Los helpers de archivo que el compañero dejó preparados sólo servían de algo una vez conectados a la ruta.
 
-Resultado final de la práctica: `check:security` **20/37** controles críticos (17 pendientes son Prácticas 5 y 6) y 3 recomendados; bloque *Validación de entrada* **4/4**; `npm test` **28/28**; `npm run test:seguridad` **20 pasos / 9 fallos**, todos de autenticación, fuerza bruta, comandos y diagnóstico.
+Resultado al cerrar la práctica 4: `check:security` **20/37** controles críticos (17 pendientes eran Prácticas 5 y 6) y 3 recomendados; bloque *Validación de entrada* **4/4**; `npm test` **28/28**; `npm run test:seguridad` **20 pasos / 9 fallos**, todos de autenticación, fuerza bruta, comandos y diagnóstico. Tras la integración final esos pendientes se cubrieron y el checklist quedó en **37/37** (ver *Integración y verificación final*).
+
+---
+
+## VUL-15 · Contraseñas almacenadas en texto plano
+
+- **Qué es y por qué importa:** quien consiga la base (un backup, un volumen, un SQL injection) obtiene directamente todas las contraseñas, que además suelen reutilizarse en otros servicios.
+- **Dónde está:** `src/inicializar.ts:21-52` (carga inicial con `password: 'admin'`, `'cliente'`, ...), `src/services/usuarios.service.ts:17-23` (`WHERE username = $1 AND password = $2`) y `:56-62` (`cambiarPassword` guardaba el texto recibido).
+- **Cómo se observa:** `docker compose exec db psql -U postgres -d origen -c "SELECT username, password FROM usuarios;"` mostraba `admin | admin`, `cliente | cliente`, etc.
+- **Por qué ocurre:** se comparaba y guardaba el valor exacto que mandaba el cliente; TypeScript no agrega ninguna protección en ejecución.
+- **Cómo se corrige:** `bcrypt.hash(password, 12)` en la carga inicial, en `actualizar()` y en `cambiarPassword()`; `bcrypt.compare()` en el login. La base vieja se migra sola en el primer arranque: las 9 filas que no empezaban con `$2` se hashearon (`[semilla] 9 contraseña(s) migrada(s) a bcrypt.`).
+- **Cómo se verifica:** `npm run test:seguridad` → `✔ las contraseñas NO se guardan en texto plano`; `check:security` → `✔ AUTH-01`, `✔ AUTH-02`, `✔ AUTH-03`.
+
+## VUL-16 · Identificador de sesión predecible y sin regenerar
+
+- **Qué es y por qué importa:** el id era `sesion_1`, `sesion_2`... Un atacante puede probar valores y usurpar la sesión de otro usuario. Además, al hacer login no se descartaba una sesión previa, lo que permite *fijación de sesión*: inducir al victim a entrar con un `sid` conocido por el atacante.
+- **Dónde está:** `src/middleware/sesion.ts:31,50-53` (versión original): `contadorSesiones += 1; const id = \`sesion_${contadorSesiones}\`;`.
+- **Cómo se corrige:** `randomBytes(32).toString('hex')` (64 caracteres) y `destruirSesion(req)` justo antes de `crearSesion()` en el login, para que la cookie impuesta por un tercero deje de existir.
+- **Cómo se verifica:** `✔ el identificador de sesión es aleatorio y no predecible` (tres logins seguidos dan tres ids distintos); `✔ AUTH-07`, `✔ AUTH-08`.
+
+## VUL-17 · Cookie de sesión sin banderas y sesiones eternas
+
+- **Qué es y por qué importa:** sin `HttpOnly`, cualquier XSS lee el `sid`; sin `Secure`, la cookie viaja en texto plano; sin vencimiento, una cookie robada sirve para siempre. El logout original sólo borraba la cookie del navegador: la sesión seguía viva en el servidor.
+- **Dónde está:** `src/middleware/sesion.ts:69-70` y `src/routes/auth.routes.ts:62-65` (versión original).
+- **Cómo se corrige:** la cookie `sid` lleva `HttpOnly`, `SameSite=Lax`, `Secure` cuando `NODE_ENV=production` y `Max-Age=900`. La sesión vence por inactividad (15 min) y por vida máxima (8 h); cada acceso renueva el TTL sin superar el límite absoluto. El logout llama a `destruirSesion(req)`, borra la entrada del `Map` y limpia las cookies. La cookie `csrf` sigue legible por JS porque el cliente debe reenviarla.
+- **Cómo se verifica:** `✔ la cookie de sesión lleva HttpOnly, Secure y SameSite` y `✔ el logout invalida la sesión en el servidor`; `✔ AUTH-05`, `✔ AUTH-06`, `✔ AUTH-09`, `✔ AUTH-10`, `✔ AUTH-11`. En vivo, el `Set-Cookie` muestra `sid=<64 hex>; Max-Age=900; HttpOnly; SameSite=Lax`.
+
+## VUL-18 · Fuerza bruta ilimitada en el login
+
+- **Qué es y por qué importa:** se podían probar contraseñas sin límite. Los mensajes ya eran genéricos, pero el tiempo de respuesta distinto entre "usuario inexistente" y "contraseña incorrecta" permitía enumerar cuentas por *timing*.
+- **Dónde está:** `src/routes/auth.routes.ts:18-54` (versión original): no había middleware de límite.
+- **Cómo se corrige:** dos capas con `express-rate-limit`: 5 intentos fallidos por IP y 5 por cuenta en 15 minutos (429). `skipSuccessfulRequests: true` evita que los logins correctos consuman el cupo. Para igualar tiempos, cuando el usuario no existe se comparte la contraseña con un hash bcrypt señuelo.
+- **Cómo se verifica:** `✔ el login bloquea o limita los intentos repetidos` y `✔ el login correcto sigue funcionando después de un bloqueo` (2/2 del bloque *Fuerza bruta*); `✔ AUTH-04`, `✔ AUTH-12`.
+
+## VUL-19 · Falta de control de roles y escalada de privilegios
+
+- **Qué es y por qué importa:** cualquier usuario autenticado, incluso con rol `cliente`, entraba al panel y podía crear/borrar productos, cambiar contraseñas, cambiar roles y ejecutar comandos en el servidor.
+- **Dónde está:** `src/routes/admin.routes.ts:49`: estaba importado `requiereRol` pero no se usaba; `PUT /usuarios/:id` aceptaba `rol` del cuerpo sin verificar quién lo mandaba.
+- **Cómo se corrige:** `router.use(requiereRol('admin'))` para todo el panel y, además, `if (!req.usuario || req.usuario.rol !== 'admin')` antes de aceptar un cambio de `rol`, con lista blanca `admin|barista|mozo|cliente`. Contraseñas y nombres se validan con los helpers de la Práctica 4.
+- **Cómo se verifica:** `✔ un usuario sin rol admin NO puede entrar al panel` y `✔ un usuario NO puede cambiar su propio rol a admin`; `✔ AUTH-14`, `✔ AUTH-15`. En vivo, un `cliente` recibe `403` en `GET /api/admin/usuarios`.
+
+## VUL-20 · Credenciales triviales de fábrica
+
+- **Qué es y por qué importa:** `admin/admin` y `cliente/cliente` son las primeras combinaciones que prueba cualquier escáner. Estaban además en `src/config.ts` y en el propio `admin.html`.
+- **Cómo se corrige:** se eliminó `credencialesPorDefecto` de la configuración. La carga inicial lee `SEED_ADMIN_PASSWORD`, `SEED_CLIENTE_PASSWORD`, etc.; si no están definidas, genera una contraseña aleatoria por cuenta y la muestra **una sola vez** en el log del servidor. En la base ya existente se conservaron las contraseñas anteriores, pero hasheadas, para no romper la demo. El cartel del panel ya no publica contraseñas.
+- **Cómo se verifica:** `check:security` → `✔ AUTH-13` (control recomendado).
+
+## Reflexión de la práctica 5
+
+La autenticación no es sólo "comparar usuario y contraseña": incluye cómo se guarda el secreto, cómo se identifica la sesión, cuánto dura, cómo se destruye y quién puede hacer cada cosa. El punto que más costó fue el rate limiting: los tests de fuerza bruta viven en un archivo separado justamente porque el contador está en memoria del proceso, y un límite mal puesto bloqueaba los logins del resto de la suite. Por eso se eligió `skipSuccessfulRequests` y un límite por cuenta además del de IP.
+
+También apareció un detalle sutil: con mensajes genéricos iguales, un login con usuario inexistente respondía antes que uno con contraseña incorrecta. El hash señuelo iguala ese tiempo. Y al rotar la cookie `csrf` en cada login hubo que confirmar que el flujo de doble envío seguía funcionando: el bloque de CSRF sigue en verde.
+
+Resultado de la práctica 5: `check:security` **31/37** controles críticos (los 6 restantes son Práctica 6) y **1** recomendado pendiente (`CFG-05`, contenedor sin root); bloques *Autenticación y sesiones* **6/6**, *Login* **3/3** y *Fuerza bruta* **2/2**; `npm test` **28/28**; `npm run test:seguridad` **26 pasos / 3 fallos**, todos de inyección de comandos y diagnóstico.
 
 ## Inyección de comandos (CMD-01/02/03)
 
@@ -382,25 +435,31 @@ Resultado final de la práctica: `check:security` **20/37** controles críticos 
 
 ## Integración y verificación final
 
-Estado actual: **pre-integración**. Esta rama ya tiene prácticas 1-4, configuración/auditoría y la corrección de inyección de comandos; `dev` todavía no incluye autenticación (práctica 5). Los cuatro comandos se ejecutan dentro del contenedor:
+Integración cerrada sobre `dev`, que ya incluye la práctica 5 mediante el merge de `security/autenticacion-sesiones` (PR #8). No se integró `fix/auth-sesiones`: esa rama reintroducía `sessionSecret` fijo, `credencialesPorDefecto` y la publicación del puerto de PostgreSQL en `docker-compose.yml`, que la consigna prohíbe modificar. Los conflictos de `src/config.ts` y `src/routes/admin.routes.ts` se resolvieron conservando la configuración env-based y el `spawn('ping', ['-c', '3', host], { shell: false })` con lista blanca, además de la validación de roles y contraseñas de la práctica 5.
+
+Los cuatro comandos se ejecutaron dentro del contenedor, con el servicio levantado:
 
 ```text
 $ docker compose exec app npm run typecheck
 > cafeteria-origen@1.0.0 typecheck
 > tsc --noEmit
+(sin errores)
 
 $ docker compose exec app npm run check:security
-✘ Faltan 10 control(es) crítico(s): 27/37.
-○ 2 control(es) recomendado(s) pendientes.
+> cafeteria-origen@1.0.0 check:security
+> node --import tsx scripts/check-security.ts
+  ✔ Todos los controles críticos están cubiertos (37/37).
+  (sin recomendados pendientes)
 
 $ docker compose exec app npm run test:seguridad
 ℹ tests 29
 ℹ suites 9
-ℹ pass 24
-ℹ fail 5
+ℹ pass 29
+ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
+
 
 $ docker compose exec app npm test
 ℹ tests 28
@@ -410,8 +469,11 @@ $ docker compose exec app npm test
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 6231.259613
-Los 5 fallos restantes son los que faltan integrar de práctica 5: fuerza bruta (1) y autenticación/sesión (4: passwords en claro, cookie sin HttpOnly, id predecible y logout que no invalida). Ya pasan AUTH-14 (rol admin) y CMD-01/02/03. Los bloques de SQL, XSS, CSRF, validación, diagnóstico y cabeceras están en verde. En los logs aparecen 400 ErrorValidacion y un 500 interno de calcularPrecio ante un producto inexistente: son payloads adversarios esperados y la API responde con mensaje genérico, sin stack (ver VUL-14).
+
+```
+
+No quedan fallos: los 37 controles críticos están en verde (SQLI, XSS, CSRF, validación, autenticación/sesión, inyección de comandos y configuración) y el script no reporta recomendados pendientes, incluido `CFG-05`. En los logs aparecen `400 ErrorValidacion` y un `500 TypeError` de `calcularPrecio` ante un producto inexistente: son payloads adversarios esperados; la API responde con mensaje genérico y sin stack trace (`✔ la API NO devuelve stack traces al cliente`, VUL-24). El bloque de fuerza bruta tarda ~3,4 s por el rate limiting deliberado, no por un fallo.
+
 ### Reflexión de la práctica 6
 
-La configuración es código: un secreto versionado o un `USER root` son tan explotables como una consulta SQL interpolada. La diferencia es que estos controles no se ven en el flujo feliz de la interfaz, por eso hace falta el checklist estático, la revisión del `Dockerfile`/`docker-compose.yml` y una pasada final con los cuatro comandos juntos. También aprendí a no fiarme de un ✔ aislado: `CFG-02` mira sólo `src/config.ts`, `CFG-03/04` miran sólo `debug.routes.ts`, y `CFG-01` ya pasaba desde la práctica de XSS. Integrar al final obligó a reconciliar `config.ts` e `INFORME.md` con lo que viniera de las otras ramas, sin restaurar valores por defecto inseguros.
+La configuración es código: un secreto versionado o un `USER root` son tan explotables como una consulta SQL interpolada. La diferencia es que estos controles no se ven en el flujo feliz de la interfaz, por eso hace falta el checklist estático, la revisión del `Dockerfile`/`docker-compose.yml` y una pasada final con los cuatro comandos juntos. También aprendí a no fiarme de un ✔ aislado: `CFG-02` mira sólo `src/config.ts`, `CFG-03/04` miran sólo `debug.routes.ts`, y `CFG-01` ya pasaba desde la práctica de XSS. Integrar al final obligó a reconciliar `config.ts`, `admin.routes.ts` e `INFORME.md` con lo que viniera de las otras ramas, sin restaurar valores por defecto inseguros. El resultado fue **37/37**, **29/29** y **28/28**, con `docker-compose.yml` intacto.

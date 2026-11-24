@@ -16,9 +16,12 @@ import {
   validarTamaño,
   nombreArchivoSeguro,
 } from '../validacion';
-import type { Usuario } from '../tipos';
+import type { Rol, Usuario } from '../tipos';
 
 const router = express.Router();
+
+/** Lista blanca de roles: no se acepta cualquier texto desde el cliente. */
+const ROLES: Rol[] = ['admin', 'barista', 'mozo', 'cliente'];
 
 /** Sólo imágenes: un .html/.svg se ejecutaría como HTML en el propio origen. */
 const EXTENSIONES_IMAGEN = ['.png', '.jpg', '.jpeg', '.webp'];
@@ -53,18 +56,35 @@ router.get('/usuarios', async (req, res, next) => {
 /**
  * PUT /api/admin/usuarios/:id
  *
- * AUTH-15: todavía se aceptan campos arbitrarios del body.
- * Con `requiereRol('admin')` un cliente ya no llega acá, pero conviene
- * restringir los campos permitidos antes de actualizar.
+ * Sólo un admin llega acá (middleware anterior). Igual se comprueba de nuevo
+ * el rol antes de aceptar un cambio de `rol`, y se valida contra una lista
+ * blanca. La contraseña nunca se guarda en claro: el servicio la hashea.
  */
 router.put('/usuarios/:id', async (req, res, next) => {
   try {
-    const { username, nombre, rol, password } = req.body || {};
+    const cuerpo = req.body || {};
     const cambios: Partial<Usuario> = {};
-    if (username !== undefined) cambios.username = username;
-    if (nombre !== undefined) cambios.nombre = nombre;
-    if (rol !== undefined) cambios.rol = rol;
-    if (password !== undefined) cambios.password = password;
+
+    if (cuerpo.username !== undefined) {
+      cambios.username = texto(cuerpo.username, 2, 40, 'usuario');
+    }
+    if (cuerpo.nombre !== undefined) {
+      cambios.nombre = texto(cuerpo.nombre, 1, 80, 'nombre');
+    }
+    // Se manda en claro por HTTPS, se guarda como hash bcrypt.
+    if (cuerpo.password !== undefined) {
+      cambios.password = texto(cuerpo.password, 8, 200, 'contraseña');
+    }
+
+    if (cuerpo.rol !== undefined) {
+      if (!req.usuario || req.usuario.rol !== 'admin') {
+        return res.status(403).json({ error: 'Sólo un administrador puede cambiar roles.' });
+      }
+      if (!ROLES.includes(cuerpo.rol as Rol)) {
+        throw new ErrorValidacion('Rol no permitido.');
+      }
+      cambios.rol = cuerpo.rol as Rol;
+    }
 
     const usuario = await usuarios.actualizar(idEntero(req.params.id), cambios);
     if (!usuario) {
@@ -125,16 +145,13 @@ router.delete('/productos/:id', async (req, res, next) => {
  *
  * CSRF: cubierto por el middleware global `verificarCsrf`.
  *
- * FALLAS: sin límite de intentos, y la contraseña nueva se guarda en texto plano.
+ * La contraseña nueva se valida y se guarda como hash bcrypt (el servicio se
+ * encarga de hashearla). El endpoint sólo lo alcanza un admin con sesión.
  */
 router.post('/cambiar-contrasena', async (req, res, next) => {
   try {
-    const { nueva } = req.body || {};
-    if (!nueva) {
-      return res.status(400).json({ error: 'Falta la contraseña nueva.' });
-    }
-    // FALLA: no se valida la longitud ni la complejidad de la contraseña.
     // (`req.usuario!`: requiereSesion ya garantizó que hay un usuario.)
+    const nueva = texto(req.body?.nueva, 8, 200, 'contraseña nueva');
     const usuario = await usuarios.cambiarPassword(req.usuario!.id, nueva);
     res.json({ mensaje: 'Contraseña actualizada.', usuario });
   } catch (err) {
@@ -146,8 +163,8 @@ router.post('/cambiar-contrasena', async (req, res, next) => {
  * POST /api/admin/probar-conexion
  *
  * CMD-01/02/03: el host se valida contra una lista blanca y el ping se
- * ejecuta con `spawn(..., { shell: false })`, argumentos separados y sin
- * interpolación en un shell.
+ * ejecuta con `spawn('ping', ['-c', '3', host], { shell: false })`, argumentos
+ * separados y sin interpolación en un shell.
  */
 router.post('/probar-conexion', (req, res, next) => {
   try {

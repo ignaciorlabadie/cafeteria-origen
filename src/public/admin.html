@@ -42,8 +42,10 @@
         <p class="form-feedback" id="login-feedback"></p>
       </form>
       <p class="muted small">
-        <strong>Usuarios de prueba:</strong> admin/admin ·
-        valentina/origen2024 · barista/cafe123 · mozo/mozo123 · cliente/cliente
+        <strong>Usuarios de prueba:</strong> admin, valentina, barista, mozo y cliente.
+        En una base nueva la contraseña se genera al arrancar y se muestra una sola vez en
+        <code>docker compose logs app</code>; también podés definirla con
+        <code>SEED_ADMIN_PASSWORD</code> (y las variables equivalentes para cada usuario).
       </p>
     </section>
 
