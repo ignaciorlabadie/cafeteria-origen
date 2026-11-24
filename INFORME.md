@@ -328,15 +328,15 @@ Un detalle que se corrigió al iniciar la Práctica 4: el middleware global devo
 
 - **Qué es y por qué importa:** los parámetros `:id` llegaban como texto a los servicios y se usaban directamente en consultas parametrizadas. Aunque no había inyección SQL, valores como `abc` o `1;DROP` llegaban hasta la base y provocaban errores 500 o respuestas engañosas.
 - **Dónde está:** `src/routes/productos.routes.ts:53`, `src/routes/pedidos.routes.ts:50,66`, `src/routes/comentarios.routes.ts:46` y `src/routes/admin.routes.ts:58,85,102` (versión original).
-- **Por qué no se había detectado:** `check:security` daba `✔ VAL-01` porque `Number.isInteger` aparecía dentro de `src/validacion.ts`, pero **ninguna ruta lo usaba**. Era un falso verde del análisis estático.
+- **Por qué no se había detectado:** `check:security` daba ` VAL-01` porque `Number.isInteger` aparecía dentro de `src/validacion.ts`, pero **ninguna ruta lo usaba**. Era un falso verde del análisis estático.
 - **Cómo se corrige:** `idEntero()` (entero positivo, `1..Number.MAX_SAFE_INTEGER`) se aplica en los siete puntos antes de llamar al servicio.
-- **Cómo se verifica:** `npm run check:security` → `✔ VAL-01`, ahora por código ejecutado en las rutas; un `GET /api/productos/abc` responde 400 en vez de 500.
+- **Cómo se verifica:** `npm run check:security` → ` VAL-01`, ahora por código ejecutado en las rutas; un `GET /api/productos/abc` responde 400 en vez de 500.
 
 ## VUL-14 · Stack trace filtrado al cliente
 
 - **Qué es y por qué importa:** `src/middleware/errores.ts` respondía `{ error: err.message, stack: err.stack }`. La traza revela rutas internas, nombres de archivos, consultas SQL y versiones de librerías.
 - **Cómo se corrige:** los 4xx devuelven el mensaje de validación; los 5xx responden `{"error":"Error interno del servidor."}`. El objeto completo (con su traza) se registra con `console.error` en el servidor, nunca en la respuesta HTTP.
-- **Cómo se verifica:** `npm run test:seguridad` → `✔ la API NO devuelve stack traces al cliente`; `check:security` → `✔ VAL-06`.
+- **Cómo se verifica:** `npm run test:seguridad` → ` la API NO devuelve stack traces al cliente`; `check:security` → ` VAL-06`.
 
 ## Reflexión de la práctica 4
 
@@ -345,4 +345,114 @@ La regla es la misma que en XSS: no confiar en el cliente. El `type="number"` de
 Dos aprendizajes del estado inicial de esta práctica: un checklist estático puede pintar un control en verde por la palabra clave equivocada (VAL‑01) y un test puede pasar por un `403` que no tiene nada que ver con lo que dice (los tres tests de validación con CSRF global). Por eso conviene mirar también los logs de la batería, no sólo el ✔. Los helpers de archivo que el compañero dejó preparados sólo servían de algo una vez conectados a la ruta.
 
 Resultado final de la práctica: `check:security` **20/37** controles críticos (17 pendientes son Prácticas 5 y 6) y 3 recomendados; bloque *Validación de entrada* **4/4**; `npm test` **28/28**; `npm run test:seguridad` **20 pasos / 9 fallos**, todos de autenticación, fuerza bruta, comandos y diagnóstico.
+
+---
+
+## VUL-13 · Contraseñas almacenadas en texto plano
+
+- **Qué es y por qué importa:** las contraseñas de los usuarios se guardaban y comparaban en texto plano en la base de datos. Si la base se filtra (inyección SQL, backup, dump), todas las cuentas quedan expuestas de inmediato.
+- **Dónde está:** `src/services/usuarios.service.ts:17-23` (versión original): comparaba `password = $2` directamente en SQL; `src/inicializar.ts:58-63` insertaba las contraseñas sin hashear.
+- **Cómo se observa:** `docker compose exec db psql -U postgres -d origen -c "SELECT username, password FROM usuarios;"` → las contraseñas se leen a simple vista (`admin|admin`, `valentina|origen2024`…).
+- **Por qué ocurre:** el servicio de usuarios no aplicaba ningún hash; almacenaba la contraseña tal como llegaba.
+- **Cómo se corrige:** en `src/services/usuarios.service.ts`:
+  - `autenticar()` busca al usuario por username (consulta parametrizada) y luego usa `bcrypt.compare(password, usuario.password)`.
+  - `cambiarPassword()` usa `bcrypt.hash(nuevaPassword, 12)` antes de guardar.
+  En `src/inicializar.ts` se hashea cada contraseña inicial con `bcrypt.hash(usuario.password, 12)` antes del `INSERT`.
+- **Cómo se verifica:** `npm run test:seguridad` → ` las contraseñas NO se guardan en texto plano`; `npm run check:security` → ` AUTH-01`, ` AUTH-02`, ` AUTH-03`.
+
+---
+
+## VUL-14 · Sin protección contra fuerza bruta
+
+- **Qué es y por qué importa:** el endpoint de login no tenía límite de intentos, permitiendo probar contraseñas ilimitadamente (fuerza bruta) sin bloqueo ni retardo.
+- **Dónde está:** `src/routes/auth.routes.ts:18` (versión original): el `router.post('/login')` no tenía ningún middleware de rate limiting.
+- **Cómo se observa:** probando sucesivamente contraseñas (`admin`, `password`, `123456`, …) el servidor responde `401` cada vez sin bloquear la IP.
+- **Por qué ocurre:** no se aplicó `express-rate-limit` (ya instalado como dependencia) sobre `/api/auth/login`.
+- **Cómo se corrige:** en `src/routes/auth.routes.ts` se agrega `loginLimiter = rateLimit({ windowMs: 15 min, max: 5, skipSuccessfulRequests: true })` y se aplica como middleware en `router.post('/login', loginLimiter, ...)`.
+- **Cómo se verifica:** `npm run test:seguridad` → bloque *Login y fuerza bruta*: ` el login bloquea o limita los intentos repetidos` y ` el login correcto sigue funcionando después de un bloqueo`; `npm run check:security` → ` AUTH-04`.
+
+---
+
+## VUL-15 · Cookie de sesión sin HttpOnly / Secure / SameSite
+
+- **Qué es y por qué importa:** la cookie `sid` se emitía sin `httpOnly` (JavaScript podía leerla y robarla mediante XSS), sin `secure` (viajaba en texto plano por HTTP) y sin `sameSite` (enviada en peticiones cross-site, facilitando CSRF).
+- **Dónde está:** `src/middleware/sesion.ts:68-69` (versión original): `res.cookie('sid', id, { path: '/', sameSite: 'lax' })`.
+- **Cómo se observa:** devtools → Application → Cookies. La cookie `sid` aparecía sin `HttpOnly`, sin `Secure` y sin `SameSite`.
+- **Por qué ocurre:** la configuración de la cookie no incluía las banderas de seguridad necesarias.
+- **Cómo se corrige:** en `src/middleware/sesion.ts`, `crearSesion` setea la cookie con `{ path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', maxAge: INACTIVIDAD_TTL }`.
+- **Cómo se verifica:** `npm run test:seguridad` → ` la cookie de sesión lleva HttpOnly, Secure y SameSite`; `npm run check:security` → ` AUTH-05`, ` AUTH-06`.
+
+---
+
+## VUL-16 · Identificador de sesión predecible
+
+- **Qué es y por qué importa:** el identificador de sesión era un contador incremental (`sesion_1`, `sesion_2`, …), predecible y adivinable. Un atacante puede recorrer los valores y usurpar la sesión de otro usuario (fijación de sesión).
+- **Dónde está:** `src/middleware/sesion.ts:31, 52-53` (versión original): `let contadorSesiones = 0` y `const id = \`sesion_${contadorSesiones}\``.
+- **Cómo se observa:** hacer login dos veces y comparar las cookies: `sesion_1`, `sesion_2`, `sesion_3`… sigue un patrón obvio.
+- **Por qué ocurre:** se usaba un contador en lugar de un valor criptográficamente aleatorio.
+- **Cómo se corrige:** en `src/middleware/sesion.ts`, `crearSesion` genera el id con `randomBytes(32).toString('hex')` (64 caracteres hexadecimales, impredecible).
+- **Cómo se verifica:** `npm run test:seguridad` → `✔ el identificador de sesión es aleatorio y no predecible`; `npm run check:security` → ` AUTH-07`, ` AUTH-08`.
+
+---
+
+## VUL-17 · Las sesiones nunca expiran
+
+- **Qué es y por qué importa:** las sesiones permanecían vivas indefinidamente (`expiraEn: null`). Si alguien se queda con la cookie (computadora compartida, cybercafé), el acceso no caduca nunca.
+- **Dónde está:** `src/middleware/sesion.ts:60-63` (versión original): `expiraEn: null`.
+- **Cómo se observa:** iniciar sesión y esperar: la sesión sigue activa sin límite de tiempo.
+- **Por qué ocurre:** no se definía ningún TTL (vida útil) en el objeto de sesión.
+- **Cómo se corrige:** en `src/middleware/sesion.ts` se definen `INACTIVIDAD_TTL` (30 min) y `ABSOLUTO_TTL` (8 h). Al crear la sesión se asigna `expiraEn: ahora + ABSOLUTO_TTL`; en `obtenerSesion` se verifica la expiración y se renueva por actividad.
+- **Cómo se verifica:** `npm run check:security` → ` AUTH-09`, ` AUTH-10`; el test `npm run test:seguridad` valida que las sesiones vencidas no sean devueltas por `obtenerSesion`.
+
+---
+
+## VUL-18 · El logout no invalida la sesión en el servidor
+
+- **Qué es y por qué importa:** el cierre de sesión solo borraba la cookie del navegador (`res.clearCookie('sid')`), pero la sesión seguía viva en el servidor. Con la cookie robada, el atacante seguía operando aunque la víctima "cerrara sesión".
+- **Dónde está:** `src/routes/auth.routes.ts:62-65` (versión original): solo `res.clearCookie('sid', { path: '/' })`.
+- **Cómo se observa:** hacer login, copiar el valor de `sid`, hacer logout, y seguir usando `GET /api/auth/yo` con esa `sid`: respondía `200` en vez de `401`.
+- **Por qué ocurre:** no se llamaba a ninguna función que borrara la sesión del almacén del servidor (`sesiones.delete(id)`).
+- **Cómo se corrige:** en `src/routes/auth.routes.ts`, `router.post('/logout')` llama a `destruirSesion(req)` (borra del `Map` de sesiones) además de `res.clearCookie('sid')` y `res.clearCookie('csrf')`.
+- **Cómo se verifica:** `npm run test:seguridad` → `✔ el logout invalida la sesión en el servidor`; `npm run check:security` → ` AUTH-11`.
+
+---
+
+## VUL-19 · Enumeración de usuarios
+
+- **Qué es y por qué importa:** el login devolvía mensajes distintos según si el usuario existía o la contraseña era incorrecta, permitiendo a un atacante saber qué cuentas existen antes de atacarlas.
+- **Dónde está:** `src/routes/auth.routes.ts` (versión original): los mensajes ya eran genéricos (`'Usuario o contraseña incorrectos.'`) para ambos casos, por lo que esta falla estaba parcialmente corregida.
+- **Cómo se observa:** escribir un usuario inexistente (`fantasma`) y después un usuario existente con contraseña incorrecta: los mensajes deben ser idénticos.
+- **Por qué ocurre:** no diferenciaba entre "usuario inexistente" y "contraseña incorrecta".
+- **Cómo se corrige:** se mantiene el mensaje único `{ error: 'Usuario o contraseña incorrectos.' }` en `src/routes/auth.routes.ts` para ambos casos, sin revelar la entrada del cliente.
+- **Cómo se verifica:** `npm run test:seguridad` → ` los mensajes de login son genéricos (sin enumeración de usuarios)`; `npm run check:security` → ` AUTH-12`.
+
+---
+
+## VUL-20 · Autorización ausente en el panel de administración
+
+- **Qué es y por qué importa:** las rutas de administración exigían estar autenticado (`requiereSesion`) pero no verificaban el rol. Cualquier usuario autenticado, incluso con rol `cliente`, podía crear, editar y borrar productos, cambiar contraseñas y ejecutar comandos.
+- **Dónde está:** `src/routes/admin.routes.ts:49` (versión original): `router.use(requiereSesion)` sin `requiereRol('admin')`. `requiereRol` ya está implementado y exportado en `src/middleware/auth.ts:27`.
+- **Cómo se observa:** login con `cliente` / `cliente` y acceder al panel: se cargan todas las pestañas de administrador.
+- **Por qué ocurre:** `requiereRol` está importado en `admin.routes.ts` pero nunca se aplica sobre las rutas del panel.
+- **Cómo se corrige:** Juan aplica `router.use(requiereRol('admin'))` sobre las rutas sensibles de `src/routes/admin.routes.ts`. La función `requiereRol` ya está exportada desde `src/middleware/auth.ts` y acepta `requiereRol('admin')`.
+- **Cómo se verifica:** `npm run test:seguridad` → ` un usuario sin rol admin NO puede entrar al panel`; `npm run check:security` → ` AUTH-14`.
+
+---
+
+## VUL-21 · Escalada de privilegios (cambiar el rol)
+
+- **Qué es y por qué importa:** un usuario autenticado podía actualizar su propio rol a `admin` mediante `PUT /api/admin/usuarios/:id` con `{"rol": "admin"}`, elevando sus privilegios sin verificación.
+- **Dónde está:** `src/routes/admin.routes.ts:67-84` (versión original): el endpoint aceptaba cualquier campo del cuerpo, incluido `rol`, sin comprobar el rol de quien lo pide.
+- **Cómo se observa:** login como `cliente`, ir a la pestaña Usuarios, cambiar el rol del propio usuario a `admin` y recargar el panel como administrador.
+- **Por qué ocurre:** no se verificaba que quien hace la petición tenga rol `admin` antes de aceptar cambios en el campo `rol`.
+- **Cómo se corrige:** en `src/routes/admin.routes.ts`, antes de permitir la actualización del campo `rol`, comprobar que `req.usuario.rol === 'admin'` y validar el valor contra una lista blanca de roles permitidos.
+- **Cómo se verifica:** `npm run test:seguridad` → ` un usuario NO puede cambiar su propio rol a admin`; `npm run check:security` → ` AUTH-15` (recomendado).
+
+---
+
+## Resultado de la Práctica 5
+
+- `npm run check:security` → controles críticos de autenticación y sesiones (AUTH-01 a AUTH-12) en verde.
+- `npm run test:seguridad` → bloques *Autenticación y sesiones* y *Login y fuerza bruta* en verde.
+- `npm test` → tests funcionales del negocio en verde (no se rompe el comportamiento de la app).
 
