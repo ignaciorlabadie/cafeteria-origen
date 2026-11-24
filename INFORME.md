@@ -337,6 +337,7 @@ Un detalle que se corrigió al iniciar la Práctica 4: el middleware global devo
 - **Qué es y por qué importa:** `src/middleware/errores.ts` respondía `{ error: err.message, stack: err.stack }`. La traza revela rutas internas, nombres de archivos, consultas SQL y versiones de librerías.
 - **Cómo se corrige:** los 4xx devuelven el mensaje de validación; los 5xx responden `{"error":"Error interno del servidor."}`. El objeto completo (con su traza) se registra con `console.error` en el servidor, nunca en la respuesta HTTP.
 - **Cómo se verifica:** `npm run test:seguridad` → `✔ la API NO devuelve stack traces al cliente`; `check:security` → `✔ VAL-06`.
+- **Equivalencia con la planilla del grupo:** este control corresponde a **VUL-24** (*Stack traces enviados al cliente*) en `VULNERABILIDADES.md`; en este informe se numeró VUL-14 por el orden de la práctica 4.
 
 ## Reflexión de la práctica 4
 
@@ -345,6 +346,13 @@ La regla es la misma que en XSS: no confiar en el cliente. El `type="number"` de
 Dos aprendizajes del estado inicial de esta práctica: un checklist estático puede pintar un control en verde por la palabra clave equivocada (VAL‑01) y un test puede pasar por un `403` que no tiene nada que ver con lo que dice (los tres tests de validación con CSRF global). Por eso conviene mirar también los logs de la batería, no sólo el ✔. Los helpers de archivo que el compañero dejó preparados sólo servían de algo una vez conectados a la ruta.
 
 Resultado final de la práctica: `check:security` **20/37** controles críticos (17 pendientes son Prácticas 5 y 6) y 3 recomendados; bloque *Validación de entrada* **4/4**; `npm test` **28/28**; `npm run test:seguridad` **20 pasos / 9 fallos**, todos de autenticación, fuerza bruta, comandos y diagnóstico.
+
+## Inyección de comandos (CMD-01/02/03)
+
+- **Qué es y por qué importa:** `exec(\`ping -c 3 ${host}\`)` pasaba la entrada por `/bin/sh -c`; `;`, `&&` o `$()` permitían ejecutar cualquier comando dentro del contenedor con el usuario `node`.
+- **Dónde está:** `src/routes/admin.routes.ts:171` (versión original).
+- **Cómo se corrige:** host validado contra `HOSTS_PERMITIDOS` y ejecución con `spawn('ping', ['-c', '3', host], { shell: false })`, argumentos separados y sin shell. Los hosts fuera de la lista se rechazan con `400 {"error":"Host no permitido."}`.
+- **Cómo se verifica:** `npm run check:security` → `✔ CMD-01`, `✔ CMD-02`, `✔ CMD-03` y `✔ AUTH-14`; `npm run test:seguridad` → los dos tests de inyección de comandos en verde. El payload `127.0.0.1; echo INYECCION_DETECTADA` ya no devuelve el marcador.
 
 ## VUL-23 · Diagnóstico sin autenticar y con `process.env` expuesto
 
@@ -374,7 +382,7 @@ Resultado final de la práctica: `check:security` **20/37** controles críticos 
 
 ## Integración y verificación final
 
-Estado actual: **pre-integración**. Esta rama ya tiene prácticas 1-4 más configuración/auditoría, pero `dev` todavía no incluye autenticación (práctica 5) ni inyección de comandos (práctica 6). Los cuatro comandos se ejecutan dentro del contenedor:
+Estado actual: **pre-integración**. Esta rama ya tiene prácticas 1-4, configuración/auditoría y la corrección de inyección de comandos; `dev` todavía no incluye autenticación (práctica 5). Los cuatro comandos se ejecutan dentro del contenedor:
 
 ```text
 $ docker compose exec app npm run typecheck
@@ -382,18 +390,17 @@ $ docker compose exec app npm run typecheck
 > tsc --noEmit
 
 $ docker compose exec app npm run check:security
-✘ Faltan 14 control(es) crítico(s): 23/37.
+✘ Faltan 10 control(es) crítico(s): 27/37.
 ○ 2 control(es) recomendado(s) pendientes.
 
 $ docker compose exec app npm run test:seguridad
 ℹ tests 29
 ℹ suites 9
-ℹ pass 21
-ℹ fail 8
+ℹ pass 24
+ℹ fail 5
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 9386.489515
 
 $ docker compose exec app npm test
 ℹ tests 28
@@ -404,12 +411,7 @@ $ docker compose exec app npm test
 ℹ skipped 0
 ℹ todo 0
 ℹ duration_ms 6231.259613
-```
-
-Los 8 fallos de `test:seguridad` son exactamente los que faltan integrar: fuerza bruta (1), autenticación y sesiones (5: passwords en claro, cookie sin `HttpOnly`, id predecible, logout que no invalida, rol admin no exigido) e inyección de comandos (2). Los bloques de SQL, XSS, CSRF, validación, diagnóstico y cabeceras están en verde. En los logs aparecen `400 ErrorValidacion` y un `500` interno de `calcularPrecio` ante un producto inexistente: son payloads adversarios esperados y la API responde con mensaje genérico, sin stack (ver VUL-14).
-
-Los números finales se asientan recién en el commit `docs: verificación final e integración de prácticas 1-6`, después de `git pull origin dev`, merge de `dev` en esta rama y resolución de conflictos en `src/config.ts` e `INFORME.md`.
-
+Los 5 fallos restantes son los que faltan integrar de práctica 5: fuerza bruta (1) y autenticación/sesión (4: passwords en claro, cookie sin HttpOnly, id predecible y logout que no invalida). Ya pasan AUTH-14 (rol admin) y CMD-01/02/03. Los bloques de SQL, XSS, CSRF, validación, diagnóstico y cabeceras están en verde. En los logs aparecen 400 ErrorValidacion y un 500 interno de calcularPrecio ante un producto inexistente: son payloads adversarios esperados y la API responde con mensaje genérico, sin stack (ver VUL-14).
 ### Reflexión de la práctica 6
 
 La configuración es código: un secreto versionado o un `USER root` son tan explotables como una consulta SQL interpolada. La diferencia es que estos controles no se ven en el flujo feliz de la interfaz, por eso hace falta el checklist estático, la revisión del `Dockerfile`/`docker-compose.yml` y una pasada final con los cuatro comandos juntos. También aprendí a no fiarme de un ✔ aislado: `CFG-02` mira sólo `src/config.ts`, `CFG-03/04` miran sólo `debug.routes.ts`, y `CFG-01` ya pasaba desde la práctica de XSS. Integrar al final obligó a reconciliar `config.ts` e `INFORME.md` con lo que viniera de las otras ramas, sin restaurar valores por defecto inseguros.
