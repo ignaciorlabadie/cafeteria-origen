@@ -1,7 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 
 import config from '../config';
 import * as catalogo from '../services/catalogo.service';
@@ -32,13 +32,14 @@ const MIME_IMAGENES: Record<string, Buffer[]> = {
   'image/webp': [Buffer.from('RIFF')],
 };
 
+// CMD-03: lista blanca de hosts; cualquier otra entrada se rechaza.
+const HOSTS_PERMITIDOS = ['127.0.0.1', 'proveedor.origen.com'];
+
 /**
  * Rutas del panel de administración.
  *
- * Todas exigen sesión y rol "admin" (OWASP A01). Antes sólo se pedía sesión,
- * así que cualquier cliente autenticado podía entrar al panel, cambiar roles
- * y ejecutar comandos en el servidor. Además, el cambio de rol se verifica
- * otra vez dentro de la ruta que actualiza usuarios.
+ * AUTH-14: toda la ruta exige sesión y rol admin. CSRF se aplica de forma
+ * global en src/app.ts mediante `verificarCsrf`.
  */
 router.use(requiereSesion);
 router.use(requiereRol('admin'));
@@ -161,31 +162,49 @@ router.post('/cambiar-contrasena', async (req, res, next) => {
 /**
  * POST /api/admin/probar-conexion
  *
- * -----------------------------------------------------------------------------
- * FALLA — Inyección de comandos del sistema operativo (OWASP A03:2021)
- * -----------------------------------------------------------------------------
- * La dirección del proveedor se mete dentro de una cadena de shell.
- * Como `exec` launches /bin/sh -c, los operadores del shell (|, ;, &&, $())
- * se interpretan y permiten ejecutar comandos arbitrarios en el contenedor.
- *
- * Corrección: validar el host contra una LISTA BLANCA y ejecutar el proceso
- * con `spawn('ping', ['-c', '3', host], { shell: false })`, sin pasar por el
- * shell.
- * -----------------------------------------------------------------------------
+ * CMD-01/02/03: el host se valida contra una lista blanca y el ping se
+ * ejecuta con `spawn('ping', ['-c', '3', host], { shell: false })`, argumentos
+ * separados y sin interpolación en un shell.
  */
-router.post('/probar-conexion', (req, res) => {
-  const { host } = req.body || {};
+router.post('/probar-conexion', (req, res, next) => {
+  try {
+    const host = texto(req.body?.host, 1, 253, 'host');
 
-  // FALLA: entrada de usuario concatenada en un comando de shell.
-  const comando = `ping -c 3 ${host}`;
+    if (!HOSTS_PERMITIDOS.includes(host)) {
+      return res.status(400).json({
+        comando: 'ping',
+        salida: '',
+        error: 'Host no permitido.',
+      });
+    }
 
-  exec(comando, (error, stdout, stderr) => {
-    res.json({
-      comando,
-      salida: stdout,
-      error: stderr || (error ? error.message : null),
+    // CMD-02: nunca concatenar la entrada del usuario en un comando
+    const proceso = spawn('ping', ['-c', '3', host], { shell: false });
+    let salida = '';
+    let error = '';
+
+    proceso.stdout.on('data', (datos: Buffer) => {
+      salida += datos.toString();
     });
-  });
+    proceso.stderr.on('data', (datos: Buffer) => {
+      error += datos.toString();
+    });
+    proceso.on('error', (err) => {
+      if (!res.headersSent) {
+        res.status(500).json({ comando: `ping -c 3 ${host}`, salida, error: err.message });
+      }
+    });
+    proceso.on('close', (codigo) => {
+      if (res.headersSent) return;
+      res.json({
+        comando: `ping -c 3 ${host}`,
+        salida,
+        error: error || (codigo === 0 ? null : `ping terminó con código ${codigo}.`),
+      });
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /**

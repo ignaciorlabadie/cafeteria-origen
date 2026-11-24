@@ -212,7 +212,7 @@
   );
   ```
 
-  Los HTML sólo cargan scripts externos (`/js/app.js`, `/js/admin.js`), así que `script-src 'self'` no rompe el sitio. Otros controles de configuración (secretos, diagnóstico, stack traces) siguen pendientes para la práctica 6.
+  Los HTML sólo cargan scripts externos (`/js/app.js`, `/js/admin.js`), así que `script-src 'self'` no rompe el sitio. Los demás controles de configuración (secretos y diagnóstico) se cubren más abajo en VUL-27 y VUL-23.
 - **Cómo se verifica:** `npm run check:security` → `✔ XSS-03` y `✔ CFG-01`; `npm run test:seguridad` → `✔ el sitio envía cabeceras de seguridad`; `curl -I http://localhost:8080/` muestra `Content-Security-Policy` y `X-Content-Type-Options`.
 
 ## Reflexión de la práctica 2
@@ -337,14 +337,15 @@ Un detalle que se corrigió al iniciar la Práctica 4: el middleware global devo
 - **Qué es y por qué importa:** `src/middleware/errores.ts` respondía `{ error: err.message, stack: err.stack }`. La traza revela rutas internas, nombres de archivos, consultas SQL y versiones de librerías.
 - **Cómo se corrige:** los 4xx devuelven el mensaje de validación; los 5xx responden `{"error":"Error interno del servidor."}`. El objeto completo (con su traza) se registra con `console.error` en el servidor, nunca en la respuesta HTTP.
 - **Cómo se verifica:** `npm run test:seguridad` → `✔ la API NO devuelve stack traces al cliente`; `check:security` → `✔ VAL-06`.
+- **Equivalencia con la planilla del grupo:** este control corresponde a **VUL-24** (*Stack traces enviados al cliente*) en `VULNERABILIDADES.md`; en este informe se numeró VUL-14 por el orden de la práctica 4.
 
 ## Reflexión de la práctica 4
 
-La regla es la misma que en XSS: no confiar en el cliente. El `type="number"` del HTML y los `min`/`max` se pueden cambiar con el devtools, así que el servidor tiene que volver a comprobar tipo, longitud, rango y formato. Centralizar los helpers en `src/validacion.ts` evita que cada ruta invente su propia validación, y `ErrorValidacion` (400) permite separar claramente "entrada inválida" de "fallo interno".
+No confiar en el cliente: `type="number"`, `min` y `max` se cambian con el devtools, así que el servidor vuelve a comprobar tipo, longitud, rango y formato. Centralizar los helpers en `src/validacion.ts` evita validaciones distintas por ruta y `ErrorValidacion` separa entrada inválida (400) de fallo interno (500).
 
-Dos aprendizajes del estado inicial de esta práctica: un checklist estático puede pintar un control en verde por la palabra clave equivocada (VAL‑01) y un test puede pasar por un `403` que no tiene nada que ver con lo que dice (los tres tests de validación con CSRF global). Por eso conviene mirar también los logs de la batería, no sólo el ✔. Los helpers de archivo que el compañero dejó preparados sólo servían de algo una vez conectados a la ruta.
+Dos detalles del estado inicial: `VAL-01` estaba en verde por una palabra clave en `src/validacion.ts` que ninguna ruta usaba, y varios tests pasaban por un `403` de CSRF en vez de por la validación. Mirar los logs evita esos falsos verdes. Los helpers de archivo sólo sirvieron una vez conectados a `admin.routes.ts`.
 
-Resultado final de la práctica 4: `check:security` **20/37** controles críticos (17 pendientes son Prácticas 5 y 6) y 3 recomendados; bloque *Validación de entrada* **4/4**; `npm test` **28/28**; `npm run test:seguridad` **20 pasos / 9 fallos**, todos de autenticación, fuerza bruta, comandos y diagnóstico.
+Resultado al cerrar la práctica 4: `check:security` **20/37**, *Validación de entrada* **4/4**, `npm test` **28/28** y `npm run test:seguridad` **20 pasos / 9 fallos** (prácticas 5 y 6). Tras la integración final: **37/37**, **29/29** y **28/28**.
 
 ---
 
@@ -393,9 +394,57 @@ Resultado final de la práctica 4: `check:security` **20/37** controles crítico
 
 ## Reflexión de la práctica 5
 
-La autenticación no es sólo "comparar usuario y contraseña": incluye cómo se guarda el secreto, cómo se identifica la sesión, cuánto dura, cómo se destruye y quién puede hacer cada cosa. El punto que más costó fue el rate limiting: los tests de fuerza bruta viven en un archivo separado justamente porque el contador está en memoria del proceso, y un límite mal puesto bloqueaba los logins del resto de la suite. Por eso se eligió `skipSuccessfulRequests` y un límite por cuenta además del de IP.
+Autenticar es más que comparar usuario y contraseña: hay que cuidar el hash, el id de sesión, su duración, su destrucción y los roles. El rate limiting fue lo más delicado: el contador vive en memoria, así que un límite mal puesto bloqueaba el resto de la suite; `skipSuccessfulRequests` y un cupo por cuenta además del de IP resolvieron eso.
 
-También apareció un detalle sutil: con mensajes genéricos iguales, un login con usuario inexistente respondía antes que uno con contraseña incorrecta. El hash señuelo iguala ese tiempo. Y al rotar la cookie `csrf` en cada login hubo que confirmar que el flujo de doble envío seguía funcionando: el bloque de CSRF sigue en verde.
+Un detalle sutil: con mensajes genéricos, un usuario inexistente respondía antes que uno con contraseña incorrecta. El hash señuelo iguala el tiempo. Rotar la cookie `csrf` en cada login obligó a confirmar que el doble envío seguía funcionando.
 
-Resultado de la práctica 5: `check:security` **31/37** controles críticos (los 6 restantes son Práctica 6) y **1** recomendado pendiente (`CFG-05`, contenedor sin root); bloques *Autenticación y sesiones* **6/6**, *Login* **3/3** y *Fuerza bruta* **2/2**; `npm test` **28/28**; `npm run test:seguridad` **26 pasos / 3 fallos**, todos de inyección de comandos y diagnóstico.
+Resultado al cerrar la práctica 5: `check:security` **31/37**, *Autenticación* **6/6**, *Login* **3/3**, *Fuerza bruta* **2/2**, `npm test` **28/28** y `npm run test:seguridad` **26 pasos / 3 fallos** (comandos y diagnóstico). `CFG-05` se cubrió en la integración final.
 
+## CMD-01/02/03 · Inyección de comandos
+
+- **Qué es y por qué importa:** `exec(\`ping -c 3 ${host}\`)` pasaba la entrada por `/bin/sh -c`; `;`, `&&` o `$()` ejecutaban comandos arbitrarios dentro del contenedor.
+- **Cómo se corrige:** `HOSTS_PERMITIDOS = ['127.0.0.1', 'proveedor.origen.com']` y `spawn('ping', ['-c', '3', host], { shell: false })`. Fuera de la lista: `400`.
+- **Cómo se verifica:** `check:security` → `✔ CMD-01`, `✔ CMD-02`, `✔ CMD-03` y `✔ AUTH-14`; `test:seguridad` → 2/2 en inyección de comandos. El payload `127.0.0.1; echo INYECCION_DETECTADA` ya no devuelve el marcador.
+
+## VUL-23 · Diagnóstico sin autenticar y con `process.env` expuesto
+
+- **Qué es y por qué importa:** `GET /api/_diagnostico` devolvía `process.env` completo, incluida `DB_PASSWORD`, sin exigir sesión.
+- **Cómo se corrige:** `router.use(requiereSesion, requiereRol('admin'))` y una respuesta sólo con `process.version`, `platform`, `arch`, `memoryUsage()`, `uptime()` y `pid`. El archivo se conserva porque el checklist lo busca.
+- **Cómo se verifica:** sin sesión responde `401`; con sesión admin, `200` y sin secretos. `✔ CFG-03`, `✔ CFG-04` y `✔ el endpoint de diagnóstico NO expone secretos`.
+
+## VUL-25 · Cabeceras de seguridad y CSP
+
+- **Por qué importa:** reducen el impacto de XSS y de intentos de incrustar la app en un iframe ajeno. La CSP es la segunda capa, después de no usar `innerHTML` y de validar entradas.
+- **Cómo se corrige:** `helmet({ contentSecurityPolicy: {...} })` en `src/app.ts`: `default-src 'self'`, `script-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'` e `img-src 'self' data:`. `upgradeInsecureRequests: null` porque la demo corre por HTTP en `localhost`.
+- **Cómo se verifica:** `✔ CFG-01`, `✔ XSS-03` y `✔ el sitio envía cabeceras de seguridad`.
+
+## VUL-27 · Secretos y credenciales escritos en el código
+
+- **Qué es y por qué importa:** `src/config.ts` tenía `sessionSecret: 'origen-cafe-2024'`, `DB_USER`/`DB_PASSWORD || 'postgres'` y un bloque `credencialesPorDefecto`.
+- **Cómo se corrige:** todo se lee de `process.env`. En development, si falta `SESSION_SECRET`, se genera un valor efímero con `randomBytes(32)`; en production, su ausencia (o la de `DB_USER`/`DB_PASSWORD`) produce error de arranque. `DB_USER` no tiene valor fijo en el código: `origen_app` queda en `.env.example` y en el despliegue. `docker-compose.yml` no se modificó. Se eliminó `credencialesPorDefecto`.
+- **Cómo se verifica:** `✔ CFG-02` y `✔ SQLI-05`. `git grep -n "sessionSecret: '\|origen-cafe" src/config.ts` no devuelve resultados.
+
+## CFG-05 · Contenedor ejecutado como usuario no root
+
+- **Estado:** aplicado: `RUN mkdir -p /app/uploads && chown -R node:node /app/uploads` y `USER node` en el `Dockerfile`.
+- **Por qué importa:** si la app se compromete, el proceso no corre con `uid=0`; además, `uploads/` sigue siendo escribible por `node`.
+- **Cómo se verifica:** `docker compose exec app id` → `uid=1000(node) gid=1000(node) groups=1000(node)`. La subida de archivos sigue pasando. Era un control recomendado y quedó cubierto.
+
+## Integración y verificación final
+
+Integración cerrada sobre `dev` (PR #8 de autenticación y PR #9 de validación de ids). No se integró `fix/auth-sesiones`: reintroducía secretos fijos y publicaba el puerto de PostgreSQL en `docker-compose.yml`. Los conflictos de `src/config.ts` y `src/routes/admin.routes.ts` se resolvieron conservando la configuración env-based, el `spawn(...)` sin shell y la validación de roles y contraseñas de la práctica 5.
+
+Batería final dentro del contenedor:
+
+```text
+$ docker compose exec app npm run typecheck      → sin errores
+$ docker compose exec app npm run check:security → ✔ 37/37, sin recomendados pendientes
+$ docker compose exec app npm run test:seguridad → tests 29 / pass 29 / fail 0
+$ docker compose exec app npm test               → tests 28 / pass 28 / fail 0
+```
+
+Los `[error] 400 ErrorValidacion` y el `500 TypeError` de `calcularPrecio` son payloads adversarios esperados: la API responde sin stack trace (`✔ la API NO devuelve stack traces al cliente`, VUL-24). El bloque de fuerza bruta tarda unos segundos por el rate limiting deliberado.
+
+### Reflexión de la práctica 6
+
+La configuración es código: un secreto versionado o un `USER root` son tan explotables como una consulta interpolada. Estos controles no se ven en el flujo feliz, por eso hicieron falta el checklist, la revisión del `Dockerfile`/`docker-compose.yml` y una pasada final con los cuatro comandos. Un ✔ aislado no alcanza: `CFG-02` mira sólo `config.ts`, `CFG-03/04` sólo `debug.routes.ts` y `CFG-01` ya venía de XSS. Resultado: **37/37**, **29/29** y **28/28**, con `docker-compose.yml` intacto.

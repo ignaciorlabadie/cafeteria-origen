@@ -1,32 +1,17 @@
 import express from 'express';
 
+import { requiereRol, requiereSesion } from '../middleware/auth';
+
 const router = express.Router();
 
-/**
- * Endpoint de diagnóstico.
- *
- * -----------------------------------------------------------------------------
- * FALLA — Exposición de información sensible (OWASP A01:2021 / A05:2021)
- * -----------------------------------------------------------------------------
- * Devuelve el contenido completo de `process.env`: credenciales de la base de
- * datos, secretos, configuración interna... y NO requiere autenticación.
- *
- * En un entorno real estos endpoints quedan detrás de autenticación y no
- * deberían existir en producción.
- */
+// CFG-03: el diagnóstico no es público; sólo admin con sesión.
+router.use(requiereSesion, requiereRol('admin'));
+
 router.get('/', (req, res) => {
   res.json({
     mensaje: 'Diagnóstico del servidor',
     version: '1.0.0',
-    entorno: process.env,
-    baseDeDatos: {
-      host: process.env.DB_HOST,
-      puerto: process.env.DB_PORT,
-      nombre: process.env.DB_NAME,
-      usuario: process.env.DB_USER,
-      // FALLA: también se filtra la contraseña.
-      password: process.env.DB_PASSWORD,
-    },
+    // CFG-04: sólo métricas del proceso; nunca process.env ni credenciales.
     sistema: {
       node: process.version,
       plataforma: process.platform,
