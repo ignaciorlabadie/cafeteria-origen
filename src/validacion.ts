@@ -61,11 +61,16 @@ export function entero(
   max: number,
   campo: string
 ): number {
+  const formaValida =
+    typeof valor === 'number' ||
+    (typeof valor === 'string' && /^-?\d+$/.test(valor));
+
+  const mensaje = `El campo "${campo}" debe ser un entero entre ${min} y ${max}.`;
+  if (!formaValida) throw new ErrorValidacion(mensaje);
+
   const n = Number(valor);
-  if (!Number.isInteger(n) || n < min || n > max) {
-    throw new ErrorValidacion(
-      `El campo "${campo}" debe ser un entero entre ${min} y ${max}.`
-    );
+  if (!Number.isSafeInteger(n) || n < min || n > max) {
+    throw new ErrorValidacion(mensaje);
   }
   return n;
 }
