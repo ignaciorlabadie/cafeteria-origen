@@ -407,7 +407,7 @@ Resultado al cerrar la práctica 4: `check:security` **20/37**, *Validación de 
 - **Dónde está:** `src/config.ts:36-39` y `src/inicializar.ts:23-48` (versión original); también el cartel de `src/public/admin.html`.
 - **Cómo se observa:** entrar al panel con `admin/admin` y `cliente/cliente`.
 - **Por qué ocurre:** la carga inicial fijaba contraseñas conocidas y la configuración las versionaba como valores por defecto.
-- **Cómo se corrige:** se eliminó `credencialesPorDefecto` de la configuración. La carga inicial lee `SEED_ADMIN_PASSWORD`, `SEED_CLIENTE_PASSWORD`, etc.; si no están definidas, genera una contraseña aleatoria por cuenta y la muestra **una sola vez** en el log del servidor. En la base ya existente se conservaron las contraseñas anteriores, pero hasheadas, para no romper la demo. El cartel del panel ya no publica contraseñas.
+- **Cómo se corrige:** se eliminó `credencialesPorDefecto` de la configuración. La carga inicial lee `SEED_ADMIN_PASSWORD`, `SEED_CLIENTE_PASSWORD`, etc.; si no están definidas, genera una contraseña aleatoria por cuenta y la muestra **una sola vez** en el log del servidor. En la base ya existente se conservaron las contraseñas anteriores, pero hasheadas, para no romper la demo. Para la demostración local se definen `SEED_*_PASSWORD` en `docker-compose.yml` con las credenciales de la guía; en producción deben generarse aleatoriamente o forzarse a cambiar. El cartel del panel ya no publica contraseñas.
 - **Cómo se verifica:** `check:security` → `✔ AUTH-13` (control recomendado).
 
 ## Reflexión de la práctica 5
@@ -451,7 +451,7 @@ Resultado al cerrar la práctica 5: `check:security` **31/37**, *Autenticación*
 - **Dónde está:** `src/config.ts` (versión original): `sessionSecret: 'origen-cafe-2024'`, `DB_USER`/`DB_PASSWORD || 'postgres'` y `credencialesPorDefecto`.
 - **Cómo se observa:** `git grep -n "sessionSecret: '\|postgres" src/config.ts` mostraba esos valores fijos.
 - **Por qué ocurre:** la configuración mezclaba valores de despliegue con el código fuente, así que cualquiera con acceso al repositorio conocía el secreto y las credenciales.
-- **Cómo se corrige:** todo se lee de `process.env`. En development, si falta `SESSION_SECRET`, se genera un valor efímero con `randomBytes(32)`; en production, su ausencia (o la de `DB_USER`/`DB_PASSWORD`) produce error de arranque. `DB_USER` no tiene valor fijo en el código: `origen_app` queda en `.env.example` y en el despliegue. `docker-compose.yml` no se modificó. Se eliminó `credencialesPorDefecto`.
+- **Cómo se corrige:** todo se lee de `process.env`. En development, si falta `SESSION_SECRET`, se genera un valor efímero con `randomBytes(32)`; en production, su ausencia (o la de `DB_USER`/`DB_PASSWORD`) produce error de arranque. `DB_USER` no tiene valor fijo en el código: `origen_app` queda en `.env.example` y en el despliegue. `docker-compose.yml` sí se ajustó en VUL-26 (sin `trust` y con el usuario `origen_app`), y además define las credenciales de demostración vía `SEED_*_PASSWORD`. Se eliminó `credencialesPorDefecto`.
 - **Cómo se verifica:** `✔ CFG-02` y `✔ SQLI-05`. `git grep -n "sessionSecret: '\|origen-cafe" src/config.ts` no devuelve resultados.
 
 ## CFG-05 · Contenedor ejecutado como usuario no root
