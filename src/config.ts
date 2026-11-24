@@ -32,11 +32,8 @@ export default {
   // Se necesita para firmar el token anti-CSRF (corrección del CSRF).
   sessionSecret: 'origen-cafe-2024',
 
-  // FALLA: credenciales por defecto que nunca se cambian.
-  credencialesPorDefecto: {
-    username: 'admin',
-    password: 'admin',
-  },
+  // Las contraseñas de las cuentas de ejemplo no viven acá: se leen de
+  // SEED_*_PASSWORD o se generan al crear la cuenta (ver inicializar.ts).
 
   uploadsDir: process.env.UPLOADS_DIR || path.join(__dirname, '..', 'uploads'),
 };
