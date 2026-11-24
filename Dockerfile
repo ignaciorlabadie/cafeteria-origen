@@ -24,7 +24,7 @@ COPY tests ./tests
 # (configuración de Docker, mínimos privilegios en la base de datos).
 COPY docker-compose.yml Dockerfile ./
 
-# Carpeta de archivos subidos
+# CFG-05: crear uploads con dueño node y ejecutar la app sin root.
 RUN mkdir -p /app/uploads && chown -R node:node /app/uploads
 USER node
 
