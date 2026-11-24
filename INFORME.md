@@ -212,7 +212,7 @@
   );
   ```
 
-  Los HTML sólo cargan scripts externos (`/js/app.js`, `/js/admin.js`), así que `script-src 'self'` no rompe el sitio. Otros controles de configuración (secretos, diagnóstico, stack traces) siguen pendientes para la práctica 6.
+  Los HTML sólo cargan scripts externos (`/js/app.js`, `/js/admin.js`), así que `script-src 'self'` no rompe el sitio. Los demás controles de configuración (secretos y diagnóstico) se cubren más abajo en VUL-27 y VUL-23.
 - **Cómo se verifica:** `npm run check:security` → `✔ XSS-03` y `✔ CFG-01`; `npm run test:seguridad` → `✔ el sitio envía cabeceras de seguridad`; `curl -I http://localhost:8080/` muestra `Content-Security-Policy` y `X-Content-Type-Options`.
 
 ## Reflexión de la práctica 2
@@ -346,3 +346,70 @@ Dos aprendizajes del estado inicial de esta práctica: un checklist estático pu
 
 Resultado final de la práctica: `check:security` **20/37** controles críticos (17 pendientes son Prácticas 5 y 6) y 3 recomendados; bloque *Validación de entrada* **4/4**; `npm test` **28/28**; `npm run test:seguridad` **20 pasos / 9 fallos**, todos de autenticación, fuerza bruta, comandos y diagnóstico.
 
+## VUL-23 · Diagnóstico sin autenticar y con `process.env` expuesto
+
+- **Qué es y por qué importa:** `GET /api/_diagnostico` devolvía el objeto completo `process.env`, incluida `DB_PASSWORD`, y no exigía sesión. Cualquier visitante podía enumerar secretos y configuración interna con una sola petición.
+- **Dónde está:** `src/routes/debug.routes.ts` (versión original).
+- **Cómo se corrige:** el router aplica `router.use(requiereSesion, requiereRol('admin'))` antes de cualquier handler y la respuesta sólo informa `process.version`, `platform`, `arch`, `memoryUsage()`, `uptime()` y `pid`. No se devuelve ninguna variable de entorno.
+- **Cómo se verifica:** sin sesión responde `401` (el test también acepta `403`/`404`); con sesión admin responde `200` y el JSON no contiene `DB_PASSWORD` ni `SESSION_SECRET`. `npm run check:security` → `✔ CFG-03` y `✔ CFG-04`; `npm run test:seguridad` → `✔ el endpoint de diagnóstico NO expone secretos`. El archivo se conserva porque el checklist lo busca.
+
+## VUL-25 · Verificación de cabeceras de seguridad y CSP
+
+- **Qué es y por qué importa:** las cabeceras HTTP reducen el impacto de XSS y de intentos de incrustar la aplicación en un iframe ajeno. La CSP es la segunda capa, después de no usar `innerHTML` y de validar entradas.
+- **Dónde está:** `src/app.ts:24`, con `helmet({ contentSecurityPolicy: {...} })`.
+- **Qué queda configurado:** `default-src 'self'`, `script-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'` e `img-src 'self' data:`. `upgradeInsecureRequests: null` porque la demo corre por HTTP en `localhost`.
+- **Cómo se verifica:** `npm run check:security` → `✔ CFG-01` y `✔ XSS-03`; `npm run test:seguridad` → `✔ el sitio envía cabeceras de seguridad`. Además, `curl -I http://localhost:8080/api/salud` muestra `Content-Security-Policy`, `X-Content-Type-Options` y `X-Frame-Options`.
+
+## VUL-27 · Secretos y credenciales escritos en el código
+
+- **Qué es y por qué importa:** `src/config.ts` tenía `sessionSecret: 'origen-cafe-2024'`, `DB_USER || 'postgres'`, `DB_PASSWORD || 'postgres'` y un bloque `credencialesPorDefecto`. Cualquiera con acceso al repositorio conocía el secreto de firma y las credenciales de la base.
+- **Cómo se corrige:** todo se lee de `process.env`. En `development`, si falta `SESSION_SECRET`, se genera un valor efímero con `randomBytes(32)`; en `production`, la ausencia del secreto (o de `DB_USER`/`DB_PASSWORD`) produce un error de arranque: falla rápido, no arranca con secretos débiles. `DB_USER` no tiene valor fijo en el código: `origen_app` queda sólo en `.env.example` y en `docker-compose.yml`, donde además se agregó `SESSION_SECRET: "${SESSION_SECRET:-}"`. Se eliminó `credencialesPorDefecto`.
+- **Cómo se verifica:** `npm run check:security` → `✔ CFG-02` y `✔ SQLI-05`. `git grep -n "sessionSecret: '\|origen-cafe" src/config.ts` no devuelve resultados.
+
+## CFG-05 · Contenedor ejecutado como usuario no root
+
+- **Estado:** aplicado. `RUN mkdir -p /app/uploads && chown -R node:node /app/uploads` y `USER node` en el `Dockerfile`.
+- **Por qué importa:** si la app se compromete, el proceso no corre con `uid=0`; además, el directorio de subidas sí es escribible por `node`.
+- **Cómo se verifica:** `docker compose exec app id` → `uid=1000(node) gid=1000(node) groups=1000(node)`; no muestra `uid=0(root)`, y la prueba de subida de archivos de `npm run test:seguridad` sigue pasando. Es un control recomendado; si por permisos del volumen host la subida fallara, se revierte este punto y queda como aviso.
+
+## Integración y verificación final
+
+Estado actual: **pre-integración**. Esta rama ya tiene prácticas 1-4 más configuración/auditoría, pero `dev` todavía no incluye autenticación (práctica 5) ni inyección de comandos (práctica 6). Los cuatro comandos se ejecutan dentro del contenedor:
+
+```text
+$ docker compose exec app npm run typecheck
+> cafeteria-origen@1.0.0 typecheck
+> tsc --noEmit
+
+$ docker compose exec app npm run check:security
+✘ Faltan 14 control(es) crítico(s): 23/37.
+○ 2 control(es) recomendado(s) pendientes.
+
+$ docker compose exec app npm run test:seguridad
+ℹ tests 29
+ℹ suites 9
+ℹ pass 21
+ℹ fail 8
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9386.489515
+
+$ docker compose exec app npm test
+ℹ tests 28
+ℹ suites 5
+ℹ pass 28
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6231.259613
+```
+
+Los 8 fallos de `test:seguridad` son exactamente los que faltan integrar: fuerza bruta (1), autenticación y sesiones (5: passwords en claro, cookie sin `HttpOnly`, id predecible, logout que no invalida, rol admin no exigido) e inyección de comandos (2). Los bloques de SQL, XSS, CSRF, validación, diagnóstico y cabeceras están en verde. En los logs aparecen `400 ErrorValidacion` y un `500` interno de `calcularPrecio` ante un producto inexistente: son payloads adversarios esperados y la API responde con mensaje genérico, sin stack (ver VUL-14).
+
+Los números finales se asientan recién en el commit `docs: verificación final e integración de prácticas 1-6`, después de `git pull origin dev`, merge de `dev` en esta rama y resolución de conflictos en `src/config.ts` e `INFORME.md`.
+
+### Reflexión de la práctica 6
+
+La configuración es código: un secreto versionado o un `USER root` son tan explotables como una consulta SQL interpolada. La diferencia es que estos controles no se ven en el flujo feliz de la interfaz, por eso hace falta el checklist estático, la revisión del `Dockerfile`/`docker-compose.yml` y una pasada final con los cuatro comandos juntos. También aprendí a no fiarme de un ✔ aislado: `CFG-02` mira sólo `src/config.ts`, `CFG-03/04` miran sólo `debug.routes.ts`, y `CFG-01` ya pasaba desde la práctica de XSS. Integrar al final obligó a reconciliar `config.ts` e `INFORME.md` con lo que viniera de las otras ramas, sin restaurar valores por defecto inseguros.
