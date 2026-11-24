@@ -15,7 +15,8 @@ const router = express.Router();
  * `mesa`, `cliente`, `productoId` y de la lista de items. El servicio vuelve
  * a validar por defensa en profundidad.
  *
- * FALLA (Práctica 5): no requiere autenticación ni rol.
+ * Nota: sigue siendo pública porque los tests funcionales la usan sin
+ * sesión; la autorización de pedidos no está en el alcance de la Práctica 5.
  */
 router.post('/', async (req, res, next) => {
   try {
@@ -74,7 +75,7 @@ router.patch('/:id/estado', async (req, res, next) => {
   try {
     const { estado } = req.body || {};
     // FALLA: no se valida el valor de `estado` ni se comprueba el rol del
-    // que modifica el pedido (Práctica 5).
+    // que modifica el pedido (fuera del alcance de la Práctica 5).
     const pedido = await pedidos.cambiarEstado(idEntero(req.params.id), estado);
     if (!pedido) {
       return res.status(404).json({ error: 'Pedido no encontrado.' });
