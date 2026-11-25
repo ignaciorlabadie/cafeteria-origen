@@ -1,6 +1,6 @@
 import * as db from '../db';
 import { calcularPrecio } from '../catalogo';
-import { texto, entero, arrayNoVacio, idEntero } from '../validacion';
+import { texto, entero, arrayNoVacio, idEntero, ErrorValidacion } from '../validacion';
 import type { Pedido, PedidoConItems, PedidoItem, Producto } from '../tipos';
 
 /** Un renglón del pedido, tal como llega en el cuerpo de la petición. */
@@ -47,9 +47,11 @@ export async function crear({ mesa, cliente, items }: NuevoPedido): Promise<Pedi
   const filas: { productoId: number; cantidad: number; precioUnitario: number }[] = [];
 
   for (const item of renglones) {
-    // Si el producto no existe, el error 500 ya no filtra su traza: el
-    // manejador global responde con un mensaje genérico.
+    // Un producto inexistente es un 400 de validación, no un 500 con traza.
     const producto = await buscarProducto(item.productoId);
+    if (!producto || !producto.activo) {
+      throw new ErrorValidacion('El producto solicitado no existe.');
+    }
     const precioUnitario = calcularPrecio(producto);
     filas.push({
       productoId: producto.id,

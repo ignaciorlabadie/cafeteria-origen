@@ -21,10 +21,11 @@ export function rutaNoEncontrada(req: Request, res: Response): void {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function manejadorErrores(err: ErrorHttp, req: Request, res: Response, next: NextFunction): void {
   const status = err.status || 500;
-  // El objeto completo (con su traza) se registra acá, no se devuelve.
-  console.error('[error]', status, err);
 
   if (status >= 500) {
+    // El objeto completo (con su traza) se registra acá, no se devuelve.
+    // Los 4xx son esperados (payloads adversarios): no ensucian el log.
+    console.error('[error]', status, err);
     res.status(500).json({ error: 'Error interno del servidor.' });
     return;
   }

@@ -499,8 +499,8 @@ $ docker compose exec app npm run test:seguridad → tests 29 / pass 29 / fail 0
 $ docker compose exec app npm test               → tests 28 / pass 28 / fail 0
 ```
 
-Los `[error] 400 ErrorValidacion` y el `500 TypeError` de `calcularPrecio` son payloads adversarios esperados: la API responde sin stack trace (`✔ la API NO devuelve stack traces al cliente`, VUL-24). El bloque de fuerza bruta tarda unos segundos por el rate limiting deliberado.
+Los payloads adversarios de la batería (extensión `.html`, `productoId: 999999`) se rechazan con `400` y ya no generan trazas en el log: los errores `4xx` son esperados y no se registran, mientras que los `5xx` siguen logueándose internamente sin filtrarse al cliente (`✔ la API NO devuelve stack traces al cliente`, VUL-24). El bloque de fuerza bruta tarda unos segundos por el rate limiting deliberado.
 
 ### Reflexión de la práctica 6
 
-La configuración es código: un secreto versionado o un `USER root` son tan explotables como una consulta interpolada. Estos controles no se ven en el flujo feliz, por eso hicieron falta el checklist, la revisión del `Dockerfile`/`docker-compose.yml` y una pasada final con los cuatro comandos. Un ✔ aislado no alcanza: `CFG-02` mira sólo `config.ts`, `CFG-03/04` sólo `debug.routes.ts` y `CFG-01` ya venía de XSS. Resultado: **37/37**, **29/29** y **28/28**, con `docker-compose.yml` intacto.
+La configuración es código: un secreto versionado o un `USER root` son tan explotables como una consulta interpolada. Estos controles no se ven en el flujo feliz, por eso hicieron falta el checklist, la revisión del `Dockerfile`/`docker-compose.yml` y una pasada final con los cuatro comandos. Un ✔ aislado no alcanza: `CFG-02` mira sólo `config.ts`, `CFG-03/04` sólo `debug.routes.ts` y `CFG-01` ya venía de XSS. Resultado: **37/37**, **29/29** y **28/28**, con `docker-compose.yml` ajustado para las credenciales de demostración.
